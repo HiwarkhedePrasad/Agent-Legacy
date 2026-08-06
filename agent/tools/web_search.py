@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote_plus
-
 import httpx
 from langchain_core.tools import tool
 
@@ -16,11 +14,13 @@ def _tinyfish_search(query: str, max_results: int = 6) -> list[dict]:
     if not settings.TINYFISH_API_KEY:
         return []
     params = {
-        "query": quote_plus(query),
+        "query": query,
         "max_results": max_results,
+        "location": "US",
+        "language": "en",
     }
-    headers = {"Authorization": f"Bearer {settings.TINYFISH_API_KEY}"}
-    resp = httpx.get(settings.TINYFISH_ENDPOINT, params=params, headers=headers, timeout=20.0)
+    headers = {"X-API-Key": settings.TINYFISH_API_KEY}
+    resp = httpx.get(settings.TINYFISH_ENDPOINT, params=params, headers=headers, timeout=25.0)
     resp.raise_for_status()
     data = resp.json()
     return data.get("results", data) if isinstance(data, dict) else data
