@@ -1,0 +1,19 @@
+# Core agent harness
+deepagents>=0.6.0
+langgraph>=1.0.0
+langchain-core>=0.3.0
+langchain-openai>=1.0.0
+
+# Web search + crawling
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+markdownify>=0.11.6
+
+# Config + env
+python-dotenv>=1.0.0
+
+# Backend (WebSocket relay — enable later)
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+websockets
+rich>=13.0>=13.0

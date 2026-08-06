@@ -1,0 +1,21 @@
+# Secrets — never commit these
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Runtime artifacts
+workspace/
+agent/data/memory/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
