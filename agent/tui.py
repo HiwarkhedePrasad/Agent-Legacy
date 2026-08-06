@@ -159,16 +159,22 @@ def _input_thread(tui: "TUI") -> None:
         import msvcrt
 
         while True:
-            ch = msvcrt.getwch()
-            if ch in ("\xe0", "\x00"):
-                code = msvcrt.getwch()
-                ev = _map_win_scan(code)
-            elif ch == "\x1b":
-                ev = _map_vt(_collect_seq())
-            else:
-                ev = None  # plain character input is ignored
-            if ev:
-                tui.on_input(ev)
+            try:
+                ch = msvcrt.getwch()
+                if ch in ("\xe0", "\x00"):
+                    code = msvcrt.getwch()
+                    ev = _map_win_scan(code)
+                    if ev:
+                        tui.on_input(ev)
+                elif ch == "\x1b":
+                    ev = _map_vt(_collect_seq())
+                    if ev:
+                        tui.on_input(ev)
+                else:
+                    tui.on_key_char(ch)  # printable / Backspace / Enter -> prompt box
+            except Exception:  # noqa: BLE001
+                # Never let one bad byte kill the reader thread.
+                time.sleep(0.01)
     else:
         _unix_input_thread(tui)
 
@@ -180,7 +186,6 @@ def _unix_input_thread(tui: "TUI") -> None:
 
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
-    ev = None
     try:
         tty.setcbreak(fd)  # raw-ish: every key is delivered immediately
         buf = b""
@@ -197,12 +202,15 @@ def _unix_input_thread(tui: "TUI") -> None:
                         break
                     buf += sys.stdin.buffer.read(1)
                 ev = _map_vt(buf.decode("utf-8", "replace"))
+                if ev:
+                    tui.on_input(ev)
                 buf = b""
+            elif buf == b"\xe0":
+                buf = b""  # rare on unix: extended-key prefix, ignore
             else:
-                buf = b""  # plain key -> ignore
-            if ev:
-                tui.on_input(ev)
-                ev = None
+                # Single plain key byte -> feed the prompt box.
+                tui.on_key_char(buf.decode("utf-8", "replace"))
+                buf = b""
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -348,6 +356,46 @@ class TUI:
         start = max(0, end - self.view_height)
         return self.log[start:end]
 
+    def _scrollbar(self) -> Text:
+        """Draw a vertical scrollbar (thumb + track + top/bottom markers)."""
+        total = len(self.log)
+        view = self.view_height
+        if total <= view:
+            # Nothing to scroll yet: show an empty track.
+            return Text("\n".join(["│"] * view), style="dim")
+
+        max_scroll = total - view
+        self.scroll = min(self.scroll, max_scroll)
+
+        # Thumb length proportional to the fraction of content visible.
+        thumb_len = max(1, round(view * (view / total)))
+        thumb_len = min(thumb_len, view - 2)
+
+        frac = self.scroll / max_scroll if max_scroll else 0.0
+        thumb_top = round(frac * (view - thumb_len))
+
+        rows: list[tuple[str, str]] = []
+        for i in range(view):
+            if thumb_top <= i < thumb_top + thumb_len:
+                rows.append(("█", "bright_white"))
+            else:
+                rows.append(("│", "dim"))
+
+        # Top/bottom indicators: more content above / below the visible window.
+        # ▲ = older lines above (can scroll up) ; ▼ = newer lines below (can
+        # scroll down toward latest).
+        if self.scroll < max_scroll:
+            rows[0] = ("▲", "bold cyan")
+        if self.scroll > 0:
+            rows[-1] = ("▼", "bold cyan")
+
+        bar = Text()
+        for i, (ch, style) in enumerate(rows):
+            bar.append(ch, style=style)
+            if i < len(rows) - 1:
+                bar.append("\n", style=style)
+        return bar
+
     def _log_panel(self) -> Panel:
         visible = self._visible_log()
         parts: list = list(visible)
@@ -359,8 +407,14 @@ class TUI:
         title = "[bold]AI Operations Center — live[/]"
         if self.scroll > 0:
             title = f"[bold]AI Operations Center — scrollback {self.scroll} lines↑[/]"
+
+        grid = Table.grid(expand=True)
+        grid.add_column(ratio=1, overflow="fold")
+        grid.add_column(width=2, justify="center", vertical="middle")
+        grid.add_row(Group(*parts), self._scrollbar())
+
         return Panel(
-            Group(*parts),
+            grid,
             title=title,
             subtitle=f"{len(self.log)} lines",
             border_style="cyan",
@@ -438,17 +492,35 @@ class TUI:
         return layout
 
 
-async def _main(prompt_input: str, session_id: str = "tui") -> None:
+async def _main(session_id: str = "tui", initial_prompt: str | None = None) -> None:
     tui = TUI()
+    if initial_prompt:
+        tui.submits.put(initial_prompt)
     _enable_mouse()
     reader = threading.Thread(target=_input_thread, args=(tui,), daemon=True)
     reader.start()
     try:
         with Live(tui.render(), console=console, refresh_per_second=12, screen=True) as live:
-            async for ev in run_agent(prompt_input, session_id):
-                tui.consume(ev)
+            while True:
+                # Re-render the dashboard + input box every frame while idle so
+                # typed text appears live. (Living on the auto-refresh alone
+                # would re-draw a stale snapshot and hide your typing.)
                 tui.set_viewport(console.height)
                 live.update(tui.render())
+                try:
+                    prompt_input = tui.submits.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.05)
+                    continue
+                if prompt_input.strip().lower() in ("exit", "quit", "q", "bye"):
+                    break
+                tui.begin_run(prompt_input)
+                async for ev in run_agent(prompt_input, session_id):
+                    tui.consume(ev)
+                    tui.set_viewport(console.height)
+                    live.update(tui.render())
+    except KeyboardInterrupt:
+        pass
     finally:
         _disable_mouse()
     console.print()
@@ -457,10 +529,8 @@ async def _main(prompt_input: str, session_id: str = "tui") -> None:
 def main() -> None:
     import sys
 
-    prompt_input = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
-    if not prompt_input:
-        prompt_input = console.input("[bold cyan]What should the AI Operations Center do? [/]")
-    asyncio.run(_main(prompt_input))
+    initial = " ".join(sys.argv[1:]) or None
+    asyncio.run(_main(session_id="tui", initial_prompt=initial))
 
 
 if __name__ == "__main__":
