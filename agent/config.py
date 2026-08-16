@@ -41,7 +41,12 @@ class Settings:
     MEMORY_DIR: Path = PROJECT_ROOT / "agent" / "data" / "memory"
     WORKSPACE_DIR: Path = PROJECT_ROOT / "workspace"
 
+    # LangGraph checkpoint DB: persists run state (and therefore the ability to
+    # RESUME after the step budget runs out) across restarts, on disk.
+    CHECKPOINT_DB: Path = PROJECT_ROOT / "agent" / "data" / "checkpoints.sqlite"
+
 
 settings = Settings()
 settings.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 settings.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+settings.CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)

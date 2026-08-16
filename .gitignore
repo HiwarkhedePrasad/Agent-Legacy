@@ -19,6 +19,9 @@ dist/
 # Runtime artifacts
 workspace/
 agent/data/memory/
+# persistent langgraph checkpoints (run state — resumable but not source)
+agent/data/*.sqlite
+agent/data/*.sqlite-*
 
 # IDE / OS
 .vscode/

@@ -572,6 +572,8 @@ class AgentLegacyApp(App):
             for name, meta in AGENT_META.items():
                 if self.agents[name]["state"] == "working":
                     self._set_agent(name, "done")
+            if ev.get("budget_exhausted"):
+                self._note("budget exhausted — shipped what was complete")
             self._raw("[done]", "run complete", style="#3fb950")
             self._note("✓ run complete")
 

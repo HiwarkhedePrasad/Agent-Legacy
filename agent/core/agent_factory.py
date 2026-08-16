@@ -41,8 +41,15 @@ def build_agent(
     tier: Tier | str = Tier.SIMPLE,
     cost: CostTracker | None = None,
     domain: str = "universal",
+    checkpointer=None,
 ):
-    """Create the compiled deep agent for the given session and complexity tier."""
+    """Create the compiled deep agent for the given session and complexity tier.
+
+    checkpointer: an optional LangGraph BaseCheckpointSaver (e.g. a persistent
+    SQLite saver). When provided, the graph is resumable — if the step budget
+    is exhausted mid-run, the caller can continue from the saved checkpoint
+    instead of losing the work.
+    """
     all_tools = build_all_tools(session_id, cost=cost)
 
     main_spec = get_model_spec(tier)
@@ -99,4 +106,5 @@ def build_agent(
         subagents=subagents,
         middleware=[track_usage, *build_guardrails()],
         backend=FilesystemBackend(root_dir=str(settings.WORKSPACE_DIR)),
+        checkpointer=checkpointer,
     )

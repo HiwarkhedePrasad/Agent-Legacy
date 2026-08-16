@@ -21,11 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from typing import AsyncGenerator
 
 from agent.config import settings
 from agent.core.agent_factory import build_agent
 from agent.core.middlewares import (
+    MAX_CONTINUATIONS,
+    RECURSION_LIMIT,
     RUN_RETRIES,
     RUN_RETRY_WAIT,
     is_transient_error,
@@ -41,6 +44,13 @@ _WEB_TOOLS = ("fetch_url", "crawl_website", "extract_links", "web_search")
 # Resilience: how long to wait for the next agent event before treating the run
 # as stuck and recovering (see _timed / _RunTimeout below).
 EVENT_TIMEOUT = 300.0
+
+try:
+    from langgraph.errors import GraphRecursionError
+except Exception:  # noqa: BLE001
+
+    class GraphRecursionError(Exception):  # fallback shim for older langgraph
+        pass
 
 
 class _RunTimeout(Exception):
@@ -204,7 +214,32 @@ async def run_agent(
     }
 
     cost = CostTracker()
-    agent = build_agent(session_id, tier=tier, cost=cost)
+
+    # Permanent recursion fix: the run is persisted to SQLite under a per-task
+    # thread_id. If the step budget is exhausted, the run RESUMES from the saved
+    # checkpoint with a fresh budget instead of losing the work. Each task gets
+    # its own thread so checkpoint state never bleeds across unrelated runs.
+    thread_id = f"{session_id}-{uuid.uuid4().hex[:8]}"
+    continuations = 0
+    _conn = None
+    saver = None
+    try:
+        import aiosqlite
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        _conn = await aiosqlite.connect(str(settings.CHECKPOINT_DB))
+        saver = AsyncSqliteSaver(_conn)
+        await saver.setup()
+    except Exception:  # noqa: BLE001
+        # No persistence available — the run still works, it just can't resume.
+        if _conn is not None:
+            try:
+                await _conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _conn = None
+
+    agent = build_agent(session_id, tier=tier, cost=cost, checkpointer=saver)
     memory = LongTermMemory(session_id)
 
     try:
@@ -252,10 +287,21 @@ async def run_agent(
     # (RateLimit + backoff) and are throttled to stay under the provider's
     # per-minute quota — this loop is the last line of defence.
     attempt = 0
+    budget_exhausted = False
+    payload = input_payload
     while True:
         attempt += 1
         try:
-            async for event in _timed(agent.astream_events(input_payload, version="v2")):
+            async for event in _timed(
+                agent.astream_events(
+                    payload,
+                    version="v2",
+                    config={
+                        "recursion_limit": RECURSION_LIMIT,
+                        "configurable": {"thread_id": thread_id},
+                    },
+                )
+            ):
                 event_type = event["event"]
 
                 if event_type == "on_chat_model_stream":
@@ -351,6 +397,46 @@ async def run_agent(
             # Stream completed cleanly.
             break
 
+        except GraphRecursionError:
+            # The step budget ran out. With a persistent checkpointer this is
+            # not a failure — it's a natural pause: resume from the saved
+            # checkpoint with a fresh budget. Each task gets up to
+            # MAX_CONTINUATIONS resumes (a genuine ceiling, not one big number).
+            continuations += 1
+            budget_exhausted = True
+            if saver is not None and continuations <= MAX_CONTINUATIONS:
+                yield {
+                    "type": "retry",
+                    "attempt": continuations,
+                    "wait": 0,
+                    "reason": (
+                        f"step budget of {RECURSION_LIMIT} reached — "
+                        "resuming from the saved checkpoint"
+                    ),
+                }
+                yield next_step(
+                    f"Step budget reached — resuming from the checkpoint "
+                    f"({continuations}/{MAX_CONTINUATIONS})...",
+                    "planner",
+                )
+                payload = None  # langgraph resumes from the checkpoint when input is None
+                continue
+            yield {
+                "type": "warning",
+                "message": (
+                    f"Step budget of {RECURSION_LIMIT} reached "
+                    f"({continuations} resumes) — the team stopped here and "
+                    "is delivering what's already done."
+                ),
+            }
+            yield next_step("Step budget exhausted — shipping what's complete.", "planner")
+            if not final_text:
+                final_text = (
+                    "The team hit its step budget before finishing everything, so here is "
+                    "everything completed so far. Run the follow-up for the remaining work."
+                )
+            break
+
         except _RunTimeout:
             # A stall is treated like a transient failure: recover and retry.
             if attempt <= run_retries:
@@ -391,6 +477,13 @@ async def run_agent(
             yield {"type": "error", "message": str(exc)}
             final_text = f"Agent run failed: {exc}"
             break
+
+    # Close the persistent checkpoint connection (the stream is done using it).
+    if _conn is not None:
+        try:
+            await _conn.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     # Hufflepuff house mode: deliverables MUST get an independent review. If
     # the planner skipped QA, run a mechanical one-shot review on the strong
@@ -447,4 +540,5 @@ async def run_agent(
         "final": final_text,
         "artifacts": list(dict.fromkeys(artifacts)),
         "qa_verified": qa_verified,
+        "budget_exhausted": budget_exhausted,
     }

@@ -115,6 +115,8 @@ cp .env.example .env
 | `SIMPLE_*` / `MEDIUM_*` / `COMPLEX_*` | Per-tier model/base_url/key; blank -> falls back to global default |
 | `MODEL_ROUTING` | `auto` (heuristic first, LLM only if ambiguous) / `llm` / `heuristic` |
 | `TINYFISH_API_KEY` / `TINYFISH_ENDPOINT` | Web search provider |
+| `RECURSION_LIMIT` | LangGraph step budget per stretch (default `200`); when exhausted the run resumes from its saved checkpoint |
+| `MAX_CONTINUATIONS` | How many times a run may resume after hitting the step budget (default `5`); total work cap ≈ `(1 + MAX_CONTINUATIONS) × RECURSION_LIMIT` steps |
 
 A single TokenRouter key is enough — leave the per-tier keys blank and they fall
 back to the global default. The default setup runs every tier on
@@ -234,6 +236,11 @@ playback, `"mp3"` for saved clips.
 ## Roadmap / notes
 
 - Token/cost figures are approximations for observability, not billing.
+- Long research runs never die on LangGraph's step budget: run state is
+  checkpointed to `agent/data/checkpoints.sqlite` under a per-task `thread_id`,
+  and when `RECURSION_LIMIT` steps are exhausted the run **resumes** from the
+  saved checkpoint (up to `MAX_CONTINUATIONS` times) instead of losing the work.
+  If it still can't finish, it ships what's done so far with a clear notice.
 - Next planned piece: a FastAPI + WebSocket relay so a web dashboard can
   consume the same streaming event protocol (dependencies already in
   `requirements.txt`).

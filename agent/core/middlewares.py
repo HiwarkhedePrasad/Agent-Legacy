@@ -38,6 +38,18 @@ RETRY_BASE_WAIT = 30.0       # seconds, grows linearly each attempt (30s, 60s, 9
 RUN_RETRIES = 2              # extra full-run attempts on transient failure
 RUN_RETRY_WAIT = 45.0        # seconds, x attempt number (45s, 90s)
 
+# LangGraph superstep budget: each model call / tool batch counts one step
+# toward this limit. Research-heavy runs (many searches + fetches) exhaust the
+# default of 25 quickly, so give the team real room to work.
+RECURSION_LIMIT = int(os.getenv("RECURSION_LIMIT", "200"))
+
+# How many times a run may RESUME from its saved checkpoint after exhausting
+# the step budget (each continuation gets a fresh RECURSION_LIMIT budget).
+# Together with RECURSION_LIMIT this caps total work per task at
+# (1 + MAX_CONTINUATIONS) * RECURSION_LIMIT steps — a genuine ceiling, unlike
+# a single arbitrary limit.
+MAX_CONTINUATIONS = int(os.getenv("MAX_CONTINUATIONS", "5"))
+
 
 class CallRateLimiter:
     """One process-wide minimum-interval gate shared by every model call."""
