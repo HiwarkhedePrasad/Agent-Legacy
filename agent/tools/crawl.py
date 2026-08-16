@@ -55,7 +55,7 @@ def _is_safe_url(url: str) -> bool:
         return False
 
 
-def _fetch_one(url: str) -> tuple[str, str | None]:
+def _fetch_one(url: str) -> tuple[str, bytes | str | None]:
     """GET one URL WITHOUT following redirects, retrying once on transient
     errors. Returns:
         ("ok", body)          - page fetched
@@ -76,24 +76,25 @@ def _fetch_one(url: str) -> tuple[str, str | None]:
                     length = resp.headers.get("content-length")
                     if length and int(length) > MAX_FETCH_BYTES:
                         return ("error", None)
-                    chunks: list[str] = []
+                    chunks: list[bytes] = []
                     received = 0
-                    for chunk in resp.iter_text():
+                    for chunk in resp.iter_bytes():
                         chunks.append(chunk)
                         received += len(chunk)
                         if received > MAX_FETCH_BYTES:
                             return ("error", None)
-                    return ("ok", "".join(chunks))
+                    return ("ok", b"".join(chunks))
         except Exception:  # noqa: BLE001
             if attempt == 0:
                 time.sleep(0.5)
     return ("error", None)
 
 
-def _fetch_html(url: str) -> str | None:
-    """Fetch a page, following redirects MANUALLY so every hop is validated
-    against the SSRF blocklist - a redirect to an internal/private address is
-    refused instead of silently followed."""
+def _fetch_bytes(url: str) -> bytes | None:
+    """Fetch a URL as raw bytes, following redirects MANUALLY so every hop is
+    validated against the SSRF blocklist - a redirect to an internal/private
+    address is refused instead of silently followed. Shared by the HTML, PDF
+    and JSON-API tools."""
     current = url
     for _hop in range(MAX_REDIRECTS + 1):
         if not _is_safe_url(current):
@@ -106,6 +107,14 @@ def _fetch_html(url: str) -> str | None:
             continue
         return None
     return None
+
+
+def _fetch_html(url: str) -> str | None:
+    """Fetch a page and decode it to text (SSRF handling lives in _fetch_bytes)."""
+    data = _fetch_bytes(url)
+    if data is None:
+        return None
+    return data.decode("utf-8", errors="replace")
 
 
 def _html_to_markdown(html: str) -> str:

@@ -33,9 +33,13 @@ class HouseConfig:
     force_qa_review: bool = False         # Hufflepuff: deliverables must pass QA
     extra_run_retries: int = 0            # Hufflepuff: keep trying harder
     retry_wait: float | None = None       # Gryffindor: shorter recovery waits
-    summarize_context: bool = False       # Ravenclaw: compress long histories
-    parallel_research: bool = False       # Gryffindor: fire searches together
-    mandatory_delegation: bool = False    # Slytherin: planner must delegate
+    # Context summarization is ALWAYS on (deepagents SummarizationMiddleware);
+    # Ravenclaw adds prompt-level concision on top. Flag kept for UI display.
+    summarize_context: bool = False
+    # Expressed through the Gryffindor house prompt (batched parallel tool
+    # calls). Flag kept for UI display.
+    parallel_research: bool = False
+    mandatory_delegation: bool = False    # Slytherin: factory appends a hard directive
 
     def banner(self) -> str:
         return f"{self.glyph} {self.name.upper()}"
