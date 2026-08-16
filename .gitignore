@@ -1,5 +1,11 @@
 # Secrets — never commit these
 .env
+# local provider config with API key
+opencode.json
+
+# Claude / opencode local config
+.opencode/
+AGENTS.md
 
 # Python
 __pycache__/

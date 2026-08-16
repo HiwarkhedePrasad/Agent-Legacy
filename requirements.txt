@@ -16,4 +16,7 @@ python-dotenv>=1.0.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 websockets
-rich>=13.0>=13.0
+rich>=13.0
+
+# Terminal UI (Textual dashboard — default in run.bat)
+textual>=0.86

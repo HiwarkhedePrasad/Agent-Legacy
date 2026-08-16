@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "components-agent"
+name = "agent-legacy"
 version = "0.1.0"
-description = "Cost-aware multi-agent deep research framework (deepagents + LangGraph + OpenRouter)"
+description = "Agent-Legacy — Cost-aware multi-agent deep research framework that routes each job to the cheapest capable model"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,6 +20,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "websockets>=13.0",
+    "textual>=0.86",
 ]
 
 [project.optional-dependencies]

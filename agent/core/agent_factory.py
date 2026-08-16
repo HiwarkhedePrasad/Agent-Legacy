@@ -4,8 +4,8 @@ Uses deepagents.create_deep_agent() which compiles to a LangGraph graph,
 so sub-agents and filesystem tools come for free. The model is chosen by
 the multi-LLM router based on task complexity.
 
-Default domain: "universal" (PROMPT-A-THON #10 — Universal AI Operations
-Center). Domain packs are drop-in prompt + sub-agent sets.
+Default domain: "universal" (Agent-Legacy). Domain packs are drop-in prompt
++ sub-agent sets.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 
 from agent.config import settings
+from agent.core.middlewares import build_guardrails, build_usage_middleware
 from agent.cost import CostTracker
 from agent.prompts.universal_ops import (
     DECISION_SYSTEM_PROMPT,
@@ -45,30 +46,41 @@ def build_agent(
     main_spec = get_model_spec(tier)
     strong_spec = get_model_spec(Tier.COMPLEX)
 
+    # Real provider usage tracking (works even with cost=None-ish tiers) —
+    # one tracker per agent (main + each sub-agent) so sub-agent calls are
+    # attributed to the model that actually served them.
+    if cost is None:
+        cost = CostTracker()
+    track_usage = build_usage_middleware(cost)
+
     subagents = [
         {
             "name": "research",
             "description": "Research agent. Web-searches and deep-crawls sources, gathers cited evidence.",
             "system_prompt": RESEARCH_SYSTEM_PROMPT,
             "tools": _web_and_memory_tools(all_tools),
+            "middleware": [track_usage],
         },
         {
             "name": "executor",
             "description": "Tool Execution agent. Uses tools to produce files and gather data on request.",
             "system_prompt": EXECUTOR_SYSTEM_PROMPT,
             "tools": all_tools,
+            "middleware": [track_usage],
         },
         {
             "name": "decision",
             "description": "Decision agent. Runs on the strongest model to reason about the hardest choices.",
             "system_prompt": DECISION_SYSTEM_PROMPT,
             "model": build_chat(strong_spec),
+            "middleware": [track_usage],
         },
         {
             "name": "qa",
             "description": "QA agent. Independently reviews deliverables and returns a PASS/FAIL verdict with a score out of 10.",
             "system_prompt": QA_SYSTEM_PROMPT,
             "model": build_chat(strong_spec),
+            "middleware": [track_usage],
         },
     ]
 
@@ -77,5 +89,6 @@ def build_agent(
         tools=all_tools,
         system_prompt=PLANNER_SYSTEM_PROMPT,
         subagents=subagents,
+        middleware=[track_usage, *build_guardrails()],
         backend=FilesystemBackend(root_dir=str(settings.WORKSPACE_DIR)),
     )

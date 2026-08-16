@@ -27,6 +27,10 @@ class Settings:
 
     MODEL_ROUTING: str = os.getenv("MODEL_ROUTING", "auto")  # auto|llm|heuristic
 
+    # Mirror the model's chain-of-thought (reasoning_content) into the live log.
+    # Off by default — reasoning tokens are verbose and can confuse the demo.
+    SHOW_REASONING: bool = os.getenv("SHOW_REASONING", "0") in ("1", "true", "yes", "on")
+
     # Speech I/O via OpenRouter (TTS output + STT input).
     TTS_MODEL: str = os.getenv("TTS_MODEL", "fish-audio/s2.1-pro-free:free")
     STT_MODEL: str = os.getenv("STT_MODEL", "fish-audio/transcribe-1")
