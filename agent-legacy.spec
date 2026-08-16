@@ -24,6 +24,7 @@ COLLECT_ALL = (
     "markdownify",
     "aiosqlite",
     "dotenv",
+    "pypdf",
 )
 for pkg in COLLECT_ALL:
     try:
@@ -78,7 +79,23 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "numpy.testing"],
+    excludes=[
+        # --- not needed at runtime for this app (verified by --smoke) ---
+        "tkinter", "matplotlib", "numpy.testing",
+        # other-provider SDKs pulled in transitively (we only use
+        # OpenAI-compatible endpoints via langchain_openai).
+        # langchain_anthropic stays: deepagents imports ChatAnthropic.
+        "google", "google.auth", "google.genai", "google_genai",
+        "googleapis", "googleapis_common", "google_auth",
+        "cryptography", "pyasn1", "rsa",
+        # web relay (codex_bridge only) — not imported by the TUI entry
+        "fastapi", "starlette", "uvicorn",  # websockets stays: langgraph_sdk imports it
+        # optional heavy bits: token counting + langsmith compression
+        # (pygments stays: rich.markdown imports it at module level)
+        "zstandard",  # tiktoken stays: langchain_openai imports it at module level
+        # packaging tooling that should never ship
+        "pkg_resources", "setuptools", "pip", "pytest",
+    ],
     noarchive=False,
 )
 
@@ -94,6 +111,6 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,
+    upx=True,
     console=True,  # terminal UI — needs a real console
 )

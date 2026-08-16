@@ -25,6 +25,9 @@ agent/data/memory/
 agent/data/*.sqlite
 agent/data/*.sqlite-*
 
+# packaging helpers (UPX binary download)
+/tools/
+
 # IDE / OS
 .vscode/
 .idea/

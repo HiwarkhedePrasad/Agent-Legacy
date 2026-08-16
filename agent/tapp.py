@@ -870,6 +870,14 @@ def smoke() -> None:
     build_agent("smoke", tier="simple")
     print("[OK] deep agent graph compiled (no API call made)")
     print(f"[OK] workspace: {settings.WORKSPACE_DIR}")
+    print(f"[OK] edit root: {settings.EDIT_ROOT}")
+    try:
+        import httpx
+
+        resp = httpx.get("https://api.tokenrouter.com", timeout=15.0)
+        print(f"[OK] TLS handshake + HTTPS works (HTTP {resp.status_code})")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] TLS/HTTPS check failed: {exc}")
 
 
 def main() -> None:
