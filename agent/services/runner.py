@@ -20,6 +20,7 @@ The stream is intentionally verbose so the demo SHOWS everything happening:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import uuid
 from typing import AsyncGenerator
@@ -45,11 +46,39 @@ _WEB_TOOLS = ("fetch_url", "crawl_website", "extract_links", "web_search")
 # as stuck and recovering (see _timed / _RunTimeout below).
 EVENT_TIMEOUT = 300.0
 
+# Keep the checkpoint DB from growing forever: after each run, prune all but
+# the most recent CHECKPOINT_KEEP_THREADS task threads (one thread per task).
+CHECKPOINT_KEEP_THREADS = int(os.getenv("CHECKPOINT_KEEP_THREADS", "25"))
+
 try:
     from langgraph.errors import GraphRecursionError
 except Exception:  # noqa: BLE001
 
     class GraphRecursionError(Exception):  # fallback shim for older langgraph
+        pass
+
+
+async def _prune_checkpoints(conn, keep: int = CHECKPOINT_KEEP_THREADS) -> None:
+    """Delete all but the `keep` most-recent task threads from the checkpoint
+    DB so it doesn't grow unbounded (each task mints a fresh thread_id).
+    checkpoint_id is a time-sortable uuid6, so MAX(checkpoint_id) orders
+    threads by last activity. Best-effort: failures never break a run."""
+    try:
+        cursor = await conn.execute(
+            "SELECT thread_id, MAX(checkpoint_id) AS latest FROM checkpoints "
+            "GROUP BY thread_id ORDER BY latest DESC LIMIT -1 OFFSET ?",
+            (keep,),
+        )
+        stale = [row[0] for row in await cursor.fetchall()]
+        if not stale:
+            return
+        for table in ("checkpoints", "checkpoint_blobs", "checkpoint_writes"):
+            for thread_id in stale:
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE thread_id = ?", (thread_id,)
+                )
+        await conn.commit()
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -478,8 +507,10 @@ async def run_agent(
             final_text = f"Agent run failed: {exc}"
             break
 
-    # Close the persistent checkpoint connection (the stream is done using it).
+    # Prune stale task threads, then close the persistent checkpoint
+    # connection (the stream is done using it).
     if _conn is not None:
+        await _prune_checkpoints(_conn)
         try:
             await _conn.close()
         except Exception:  # noqa: BLE001

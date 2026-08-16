@@ -23,6 +23,11 @@ from agent.tools.web_search import USER_AGENT
 
 MAX_PAGE_CHARS = 8000
 
+# SSRF hardening: never buffer more than ~2 MB of page data, and never follow
+# more than this many redirect hops (each hop is re-validated).
+MAX_FETCH_BYTES = 2_000_000
+MAX_REDIRECTS = 5
+
 
 def _is_safe_url(url: str) -> bool:
     """Block SSRF: reject non-http(s) schemes, localhost and private/reserved
@@ -50,24 +55,56 @@ def _is_safe_url(url: str) -> bool:
         return False
 
 
-def _fetch_html(url: str) -> str | None:
-    """Fetch a page, retrying once on transient errors so a bad fetch doesn't
-    just drop content (the caller can then try another source)."""
-    if not _is_safe_url(url):
-        return None
+def _fetch_one(url: str) -> tuple[str, str | None]:
+    """GET one URL WITHOUT following redirects, retrying once on transient
+    errors. Returns:
+        ("ok", body)          - page fetched
+        ("redirect", target)  - a 3xx with a Location to follow
+        ("error", None)       - gave up
+    Bodies are capped at MAX_FETCH_BYTES so a huge page cannot exhaust memory.
+    """
     for attempt in range(2):
         try:
-            resp = httpx.get(
-                url,
-                headers={"User-Agent": USER_AGENT},
-                timeout=25.0,
-                follow_redirects=True,
-            )
-            resp.raise_for_status()
-            return resp.text
+            with httpx.Client(timeout=25.0, follow_redirects=False) as client:
+                with client.stream("GET", url, headers={"User-Agent": USER_AGENT}) as resp:
+                    if resp.is_redirect:
+                        location = resp.headers.get("location")
+                        if not location:
+                            return ("error", None)
+                        return ("redirect", urljoin(str(resp.url), location))
+                    resp.raise_for_status()
+                    length = resp.headers.get("content-length")
+                    if length and int(length) > MAX_FETCH_BYTES:
+                        return ("error", None)
+                    chunks: list[str] = []
+                    received = 0
+                    for chunk in resp.iter_text():
+                        chunks.append(chunk)
+                        received += len(chunk)
+                        if received > MAX_FETCH_BYTES:
+                            return ("error", None)
+                    return ("ok", "".join(chunks))
         except Exception:  # noqa: BLE001
             if attempt == 0:
                 time.sleep(0.5)
+    return ("error", None)
+
+
+def _fetch_html(url: str) -> str | None:
+    """Fetch a page, following redirects MANUALLY so every hop is validated
+    against the SSRF blocklist - a redirect to an internal/private address is
+    refused instead of silently followed."""
+    current = url
+    for _hop in range(MAX_REDIRECTS + 1):
+        if not _is_safe_url(current):
+            return None
+        kind, value = _fetch_one(current)
+        if kind == "ok":
+            return value
+        if kind == "redirect":
+            current = value
+            continue
+        return None
     return None
 
 

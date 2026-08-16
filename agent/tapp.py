@@ -48,6 +48,8 @@ from agent.commands import (
     help_lines,
     is_command,
 )
+from agent.config import settings
+from agent.memory.long_term import LongTermMemory
 from agent.modes import get_mode, get_mode_key, next_mode, set_mode
 from agent.services.runner import run_agent
 
@@ -77,7 +79,7 @@ STAGES = (
 CSS = """
 Screen { background: #000000; }
 
-#banner { height: 1; padding: 0 1; background: #0a0a0a; border-bottom: solid #1c1c1c; }
+#banner { height: 2; padding: 0 1; background: #0a0a0a; border-bottom: solid #1c1c1c; content-align-vertical: middle; }
 
 #statusbar { height: 2; padding: 0 1; background: #0e0e0e; content-align-vertical: middle; }
 .pill { padding: 0 1; text-style: bold; }
@@ -92,19 +94,19 @@ Screen { background: #000000; }
 
 #main { height: 1fr; }
 
-#agents {
-    width: 26;
+#agents-panel {
+    width: 28;
     background: #0a0a0a;
     border-right: solid #1c1c1c;
-    padding: 0 1;
 }
 #workspace-scroll { width: 1fr; background: #000000; }
-#activity {
-    width: 42;
+#activity-panel {
+    width: 40;
     background: #0a0a0a;
     border-left: solid #1c1c1c;
-    padding: 0 1;
 }
+#agents, #activity { padding: 0 1; }
+#workspace { padding: 0 2; }
 .panel-head { text-style: bold; color: #ffffff; }
 
 #rawline {
@@ -118,7 +120,7 @@ Screen { background: #000000; }
 .cost-ok    { color: #3fb950; text-style: bold; }
 .cost-warn  { color: #e3b341; }
 
-#prompt { dock: bottom; margin: 0; background: #0a0a0a; border-top: solid #2a2a2a; }
+#prompt { margin: 0; background: #0a0a0a; border-top: solid #2a2a2a; }
 #prompt > .input--placeholder { color: #4a4a4a; }
 
 LogScreen { align: center middle; }
@@ -215,9 +217,12 @@ class AgentLegacyApp(App):
         yield Static(self._banner_text(), id="banner", markup=False)
         yield Static(id="statusbar", markup=True)
         with Horizontal(id="main"):
-            yield VerticalScroll(Static(id="agents", expand=True))
-            yield VerticalScroll(Static(id="workspace", expand=True), id="workspace-scroll")
-            yield VerticalScroll(Static(id="activity", expand=True))
+            with VerticalScroll(id="agents-panel"):
+                yield Static(id="agents", expand=True)
+            with VerticalScroll(id="workspace-scroll"):
+                yield Static(id="workspace", expand=True)
+            with VerticalScroll(id="activity-panel"):
+                yield Static(id="activity", expand=True)
         yield Static("", id="rawline", markup=False)
         yield Static(id="costbar", markup=True)
         yield Input(
@@ -304,6 +309,11 @@ class AgentLegacyApp(App):
             t.append("\n")
             action = self.agents[name]["action"]
             t.append(f"    {action[:19]}\n", style="#8a8a8a" if state != "working" else state_style)
+        house = get_mode()
+        t.append("\nHOUSE MODE\n", style="bold #ffffff")
+        t.append(f"  {house.glyph} {house.name}", style=f"bold {house.color}")
+        t.append(f"  · {house.advantage}\n", style="#8a8a8a")
+        t.append(f"    {house.trait} house — press Tab\n    to switch\n", style="#4a4a4a")
         self.query_one("#agents", Static).update(t)
 
     def _render_workspace(self) -> None:
@@ -316,6 +326,23 @@ class AgentLegacyApp(App):
         parts.append(p)
 
         # PIPELINE -------------------------------------------------------
+        # QUICK START — only while idle; real work replaces it once a task runs
+        if not self.task_text:
+            p = Text()
+            p.append("QUICK START\n", style="bold #ffffff")
+            p.append("  Type a task below and press Enter. Try:\n", style="#c0c0c0")
+            for sample in (
+                "research AI agents and write a report",
+                "compare LangGraph vs CrewAI, save findings",
+                "latest news on ISRO and summarize it",
+            ):
+                p.append("    ▸ ", style="#e3b341")
+                p.append(sample + "\n", style="#79c0ff")
+            p.append("\n  /help commands · /sessions resume ·\n", style="#8a8a8a")
+            p.append("  /memory recall · /logs raw trace\n", style="#8a8a8a")
+            parts.append(Text())
+            parts.append(p)
+
         p = Text()
         p.append("PIPELINE\n", style="bold #ffffff")
         for key, name, desc in STAGES:
@@ -394,8 +421,30 @@ class AgentLegacyApp(App):
             for line in self.timeline[-24:]:
                 t.append(line + "\n", style="#8a8a8a")
         else:
-            t.append("  waiting for activity…\n", style="#4a4a4a")
+            t.append("  no activity yet this run\n\n", style="#4a4a4a")
+            t.append("SESSION\n", style="bold #ffffff")
+            stats = self._session_stats()
+            t.append(f"  id        {self.session_id}\n", style="#8a8a8a")
+            t.append(f"  memories  {stats['memories']} stored\n", style="#8a8a8a")
+            t.append(f"  workspace {stats['files']} file(s)\n\n", style="#8a8a8a")
+            t.append("HOW A RUN WORKS\n", style="bold #ffffff")
+            t.append("  1. task routed to the\n     cheapest capable model\n", style="#8a8a8a")
+            t.append("  2. specialists research,\n     build, decide, verify\n", style="#8a8a8a")
+            t.append("  3. deliverables land in\n     workspace/\n", style="#8a8a8a")
         self.query_one("#activity", Static).update(t)
+
+    def _session_stats(self) -> dict:
+        """Cheap live stats for the idle panels: memories stored for this
+        session + files currently in the shared workspace."""
+        try:
+            memories = len(LongTermMemory(self.session_id).entries)
+        except Exception:  # noqa: BLE001
+            memories = 0
+        try:
+            files = sum(1 for p in settings.WORKSPACE_DIR.rglob("*") if p.is_file())
+        except Exception:  # noqa: BLE001
+            files = 0
+        return {"memories": memories, "files": files}
 
     def _render_rawline(self) -> None:
         """Latest raw event line + hint (the trace itself lives behind /logs)."""
@@ -464,6 +513,10 @@ class AgentLegacyApp(App):
             if len(self.token_buf) > 200 or ev["content"].rstrip().endswith(("\n", ".", "?", "!")):
                 self._raw("|", self.token_buf.strip())
                 self.token_buf = ""
+                self._render_rawline()
+            # Tokens arrive fast — repaint only the workspace, not every panel.
+            self._render_workspace()
+            return
 
         elif t == "agent":
             self._set_agent(ev["name"], "working", ev["message"])
@@ -680,11 +733,10 @@ class AgentLegacyApp(App):
         self._apply_mode(f"Tab → {house.glyph} {house.name} ({house.advantage})")
 
     def _apply_mode(self, note: str = "") -> None:
-        house = get_mode()
+        # House switches update the banner + panels but intentionally stay
+        # OUT of the ACTIVITY timeline (it's for run events, not settings).
         self.query_one("#banner").update(self._banner_text())
-        if note:
-            self._note(f"{house.glyph} {note}")
-            self._render_activity()
+        self._render_agents()
         self._render_status()
 
     def key_enter(self) -> None:
@@ -802,10 +854,31 @@ class AgentLegacyApp(App):
         self._apply_mode(f"advantage: {house.advantage}")
 
 
+def smoke() -> None:
+    """Binary self-test (like `codex doctor`): verifies the packaged bundle
+    imports cleanly and the agent graph compiles. Makes NO API calls."""
+    from agent.config import PROJECT_ROOT, settings
+    from agent.core.agent_factory import build_agent
+    from agent.memory.long_term import LongTermMemory
+    from agent.tools.registry import build_all_tools
+
+    print(f"[smoke] data dir: {PROJECT_ROOT}")
+    tools = build_all_tools("smoke")
+    print(f"[OK] {len(tools)} tools registered: " + ", ".join(t.name for t in tools))
+    memory = LongTermMemory("smoke")
+    print(f"[OK] memory store reachable ({len(memory.entries)} entries)")
+    build_agent("smoke", tier="simple")
+    print("[OK] deep agent graph compiled (no API call made)")
+    print(f"[OK] workspace: {settings.WORKSPACE_DIR}")
+
+
 def main() -> None:
     import sys
 
     args = sys.argv[1:]
+    if "--smoke" in args:
+        smoke()
+        return
     session_id = "tui"
     if "--session" in args:
         i = args.index("--session")

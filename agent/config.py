@@ -1,9 +1,27 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+def _project_root() -> Path:
+    """Where user-facing data lives (.env, memory/, workspace/, checkpoints).
+
+    In source runs that's the repo root. In a packaged single-file binary,
+    __file__ points inside PyInstaller's temp extraction dir (wiped on exit),
+    so data is anchored next to the executable instead — override with
+    AGENT_LEGACY_HOME. Distribution = agent-legacy.exe + .env sidecar.
+    """
+    if getattr(sys, "frozen", False):
+        override = os.getenv("AGENT_LEGACY_HOME")
+        if override:
+            return Path(override).expanduser().resolve()
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+PROJECT_ROOT = _project_root()
 load_dotenv(PROJECT_ROOT / ".env")
 
 
@@ -36,7 +54,7 @@ class Settings:
     STT_MODEL: str = os.getenv("STT_MODEL", "fish-audio/transcribe-1")
 
     TINYFISH_API_KEY: str = os.getenv("TINYFISH_API_KEY", "")
-    TINYFISH_ENDPOINT: str = os.getenv("TINYFISH_ENDPOINT", "https://api.tinyfish.ai/v1/search")
+    TINYFISH_ENDPOINT: str = os.getenv("TINYFISH_ENDPOINT", "https://api.search.tinyfish.ai")
 
     MEMORY_DIR: Path = PROJECT_ROOT / "agent" / "data" / "memory"
     WORKSPACE_DIR: Path = PROJECT_ROOT / "workspace"
