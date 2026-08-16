@@ -166,6 +166,23 @@ score = 0.7 * keyword_overlap + 0.2 * recency + 0.1 * (importance / 10)
 After each run, a short (TASK / RESULT / FILES) episodic summary is written
 back. Exact-duplicate entries are skipped to keep the store clean.
 
+## House modes (Tab to switch)
+
+Four switchable operating modes named after the Hogwarts houses — each changes
+actual agent behaviour, not just the theme:
+
+| House | Trait | Mechanical advantage |
+|---|---|---|
+| 🦁 Gryffindor | brave | **Speed** — parallel research batches, shorter recovery waits |
+| 🦡 Hufflepuff | loyal | **Reliability** — every deliverable forced through a QA review, +1 run retry |
+| 🦅 Ravenclaw | wise | **Economy** — forces LLM-based routing + concise outputs |
+| 🐍 Slytherin | cunning | **Ambition** — mandatory delegation to specialists, bigger cited deliverables |
+
+- **Tab** cycles the modes live (header repaints instantly with the house sigil).
+- `/mode` opens the house picker overlay; `/mode gryffindor` sets directly.
+- The active house is injected into the planner prompt and shown in the routed
+  event (`house=gryffindor (speed)`).
+
 ## Running the terminal UI
 
 ```bash

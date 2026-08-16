@@ -63,11 +63,25 @@ def main() -> None:
         from agent.commands import COMMANDS, help_lines
 
         cmd = prompt_input.split()[0].lower()
+        arg = " ".join(prompt_input.split()[1:]).strip()
         if cmd in ("/help", "/?"):
             for line in help_lines():
                 print(line)
         elif cmd in ("/exit", "/quit", "/q"):
             return
+        elif cmd in ("/mode", "/house"):
+            from agent.modes import CYCLE_ORDER, HOUSES
+
+            if arg:
+                house = HOUSES.get(arg.lower())
+                if house:
+                    print(f"{house.glyph} {house.name} — {house.advantage}: {house.description}")
+                else:
+                    print("houses:", ", ".join(CYCLE_ORDER))
+            else:
+                for key in CYCLE_ORDER:
+                    h = HOUSES[key]
+                    print(f"  {h.glyph} {h.key:<11s} {h.advantage.upper():<12s} {h.description}")
         else:
             known = [c.split()[0] for c in COMMANDS]
             hint = "(known: " + ", ".join(known) + ")" if cmd not in known else "(use the dashboard for live commands)"

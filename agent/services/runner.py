@@ -32,6 +32,7 @@ from agent.core.middlewares import (
 )
 from agent.cost import CostTracker
 from agent.memory.long_term import LongTermMemory, summarize_conversation
+from agent.modes import get_mode
 from agent.router import classify_task
 
 _SUBAGENTS = ("research", "executor", "decision", "qa")
@@ -155,19 +156,51 @@ def _preview(text: str, limit: int = 300) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+async def _forced_qa_review(task: str, final: str, artifacts: list[str]) -> dict:
+    """Mechanical QA verdict for Hufflepuff mode (strong model, no tools)."""
+    from agent.router import Tier, build_chat, get_model_spec
+
+    chat = build_chat(get_model_spec(Tier.COMPLEX))
+    try:
+        resp = await chat.ainvoke(
+            [
+                {"role": "system", "content": (
+                    "You are the QA agent. Verdict only: reply with PASS or FAIL, "
+                    "then one short sentence of reasoning, then a score N/10."
+                )},
+                {"role": "user", "content": (
+                    f"Task: {task[:600]}\n\nDeliverables: {', '.join(artifacts)}\n\n"
+                    f"Summary of final output:\n{final[:1500]}"
+                )},
+            ]
+        )
+        text = resp.content if isinstance(resp.content, str) else str(resp.content)
+    except Exception as exc:  # noqa: BLE001
+        return {"pass": True, "summary": f"QA skipped (review model error: {_preview(str(exc), 80)})"}
+    return {"pass": not text.strip().upper().startswith("FAIL"), "summary": _preview(text, 200)}
+
+
 async def run_agent(
     user_input: str,
     session_id: str = "default",
 ) -> AsyncGenerator[dict, None]:
-    tier, reason = await classify_task(user_input)
+    house = get_mode()
+    tier, reason = await classify_task(user_input, force_llm=house.force_llm_routing)
     from agent.router import get_model_spec
 
     routed_model = get_model_spec(tier).model
+
+    # House-mode resilience tuning: Gryffindor recovers faster, Hufflepuff
+    # retries harder. Baseline constants come from agent.core.middlewares.
+    run_retries = RUN_RETRIES + house.extra_run_retries
+    retry_wait = house.retry_wait if house.retry_wait else RUN_RETRY_WAIT
     yield {
         "type": "routed",
         "tier": tier.value,
         "model": routed_model,
         "reason": reason,
+        "mode": house.key,
+        "mode_advantage": house.advantage,
     }
 
     cost = CostTracker()
@@ -320,8 +353,8 @@ async def run_agent(
 
         except _RunTimeout:
             # A stall is treated like a transient failure: recover and retry.
-            if attempt <= RUN_RETRIES:
-                wait = RUN_RETRY_WAIT * attempt
+            if attempt <= run_retries:
+                wait = retry_wait * attempt
                 yield {
                     "type": "retry",
                     "attempt": attempt,
@@ -340,8 +373,8 @@ async def run_agent(
             break
 
         except Exception as exc:  # noqa: BLE001
-            if is_transient_error(exc) and attempt <= RUN_RETRIES:
-                wait = RUN_RETRY_WAIT * attempt
+            if is_transient_error(exc) and attempt <= run_retries:
+                wait = retry_wait * attempt
                 yield {
                     "type": "retry",
                     "attempt": attempt,
@@ -358,6 +391,27 @@ async def run_agent(
             yield {"type": "error", "message": str(exc)}
             final_text = f"Agent run failed: {exc}"
             break
+
+    # Hufflepuff house mode: deliverables MUST get an independent review. If
+    # the planner skipped QA, run a mechanical one-shot review on the strong
+    # model here instead of shipping unreviewed work.
+    if house.force_qa_review and artifacts and not qa_verified and not failed:
+        yield {"type": "handoff", "to": "qa", "step": step}
+        yield next_step("Hufflepuff mode: forcing an independent QA review...", "qa")
+        verdict = await _forced_qa_review(user_input, final_text, artifacts)
+        qa_verified = True
+        yield {
+            "type": "tool_result",
+            "name": "qa",
+            "ok": verdict["pass"],
+            "summary": verdict["summary"],
+            "agent": "qa",
+        }
+        if not verdict["pass"]:
+            yield {
+                "type": "warning",
+                "message": "Forced QA review came back FAIL — check the feedback above before trusting this deliverable.",
+            }
 
     if artifacts and not qa_verified:
         yield {

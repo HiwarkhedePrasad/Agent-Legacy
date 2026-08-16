@@ -129,18 +129,23 @@ class _TierSchema(PydanticBaseModel):
     reason: str = Field(description="One-line reason for the choice.")
 
 
-async def classify_task(text: str) -> tuple[Tier, str]:
+async def classify_task(text: str, force_llm: bool = False) -> tuple[Tier, str]:
     """Cost-aware task classification.
 
     The deterministic heuristic is free, so it always runs first. An LLM call
     is ONLY spent when the heuristic is unsure, i.e. it landed on MEDIUM
     (genuinely ambiguous). Confident SIMPLE/COMPLEX results skip the LLM
     entirely (saves tokens/cost).
+
+    ``force_llm=True`` (Ravenclaw house mode) always asks the classifier LLM
+    so routing decisions are deliberate rather than heuristic guesses.
     """
     tier = heuristic_tier(text)
     reason = f"heuristic => {tier.value}"
 
     mode = settings.MODEL_ROUTING
+    if force_llm:
+        mode = "llm"
     if mode not in ("llm", "auto") or (mode == "auto" and tier is not Tier.MEDIUM):
         return tier, reason
 
