@@ -28,7 +28,10 @@ from agent.prompts.universal_ops import (
 from agent.router import Tier, build_chat, get_model_spec
 from agent.tools.registry import build_all_tools
 
-_WEB_TOOLS = ("web_search", "fetch_url", "crawl_website", "extract_links")
+_WEB_TOOLS = (
+    "web_search", "fetch_url", "crawl_website", "extract_links",
+    "fetch_pdf", "call_api", "calculate", "get_datetime",
+)
 _MEMORY_TOOLS = ("recall_memory", "remember")
 
 
@@ -98,6 +101,14 @@ def build_agent(
     # Each house mode gets its own planner persona (not the same prompt with a
     # tacked-on modifier) — see agent/prompts/houses.py.
     house_planner_prompt = HOUSE_PLANNER_PROMPTS.get(house.key, PLANNER_SYSTEM_PROMPT)
+    if house.mandatory_delegation:
+        # Slytherin mechanical lever: delegation is enforced, not suggested.
+        house_planner_prompt += (
+            "\n\nSLYTHERIN DIRECTIVE (mechanical, non-negotiable): every substantive "
+            "step MUST run through a task(...) delegation to a specialist sub-agent. "
+            "A deliverable produced without at least one research delegation and one "
+            "QA delegation is an incomplete run.\n"
+        )
 
     return create_deep_agent(
         model=build_chat(main_spec),
@@ -105,6 +116,6 @@ def build_agent(
         system_prompt=house_planner_prompt,
         subagents=subagents,
         middleware=[track_usage, *build_guardrails()],
-        backend=FilesystemBackend(root_dir=str(settings.WORKSPACE_DIR)),
+        backend=FilesystemBackend(root_dir=str(settings.EDIT_ROOT)),
         checkpointer=checkpointer,
     )

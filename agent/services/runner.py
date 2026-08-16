@@ -40,7 +40,10 @@ from agent.modes import get_mode
 from agent.router import classify_task
 
 _SUBAGENTS = ("research", "executor", "decision", "qa")
-_WEB_TOOLS = ("fetch_url", "crawl_website", "extract_links", "web_search")
+_WEB_TOOLS = (
+    "fetch_url", "crawl_website", "extract_links", "web_search",
+    "fetch_pdf", "call_api",
+)
 
 # Resilience: how long to wait for the next agent event before treating the run
 # as stuck and recovering (see _timed / _RunTimeout below).
@@ -160,12 +163,33 @@ def _tool_label(name: str, args: dict) -> str:
         if name == "extract_links":
             url = str(args.get("url", ""))
             return f"Extracting links from {url}"
+        if name == "fetch_pdf":
+            url = str(args.get("url", ""))
+            return f"Reading PDF document {url}" if url else "Reading a PDF document"
+        if name == "call_api":
+            url = str(args.get("url", ""))
+            return f"Calling API endpoint {url}" if url else "Calling an API"
+        if name == "calculate":
+            expr = str(args.get("expression", ""))
+            return f"Calculating {expr}" if expr else "Calculating"
+        if name == "get_datetime":
+            return "Checking the current date and time"
         if name == "web_search":
             q = str(args.get("query", ""))
             return f'Searching the web for "{q}"'
         if name == "write_file":
             p = str(args.get("file_path") or args.get("path") or "")
             return f"Writing deliverable to {p}" if p else "Writing a deliverable file"
+        if name == "edit_file":
+            p = str(args.get("file_path") or args.get("path") or "")
+            return f"Editing {p} (targeted change, no full rewrite)" if p else "Making a targeted file edit"
+        if name == "read_file":
+            p = str(args.get("file_path") or args.get("path") or "")
+            return f"Reading {p}" if p else "Reading a file"
+        if name in ("grep", "glob"):
+            return "Searching the codebase"
+        if name == "ls":
+            return "Listing files"
         if name == "route_to_strong_llm":
             return "Escalating this step to the strongest LLM"
         if name == "remember":
