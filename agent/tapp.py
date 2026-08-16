@@ -70,6 +70,7 @@ Screen { background: #000000; }
 .pill-planning{ background: #2a2a2a; color: #e0e0e0; }
 .pill-running { background: #14271c; color: #56d3a6; }
 .pill-done    { background: #17361d; color: #3fb950; }
+.pill-retrying{ background: #3a2e14; color: #e3b341; }
 .pill-error   { background: #3a1414; color: #f85149; }
 .status-meta { color: #8a8a8a; margin-left: 2; }
 .status-step { color: #e3b341; margin-left: 2; text-style: bold; }
@@ -210,7 +211,7 @@ class AgentLegacyApp(App):
 
     def _render_status(self) -> None:
         label = self.status.upper()
-        pill_class = f"pill-{self.status if self.status in ('idle', 'done', 'error', 'running') else 'planning'}"
+        pill_class = f"pill-{self.status if self.status in ('idle', 'done', 'error', 'running', 'retrying') else 'planning'}"
         tier_color = TIER_COLORS.get(self.tier, "#8a8a8a")
         beat = f" {self._heartbeat}" if self._heartbeat else ""
         elapsed = int(time.time() - self.start_time)
@@ -305,6 +306,13 @@ class AgentLegacyApp(App):
             self._line("▤ data", f"+{ev['chars']:,} chars", style="#e3b341")
         elif t == "warning":
             self._line("⚠", ev["message"], style="#e3b341")
+        elif t == "retry":
+            self.status = "retrying"
+            self._line(
+                "↻ retry",
+                f"attempt {ev['attempt']} — waiting {int(ev['wait'])}s before continuing ({ev.get('reason', 'recovering')[:90]})",
+                style="bold #e3b341",
+            )
         elif t == "tool_result" and not ev["ok"]:
             self._line("✗ failed", f"{ev['name']} — retrying from another angle", style="bold #f85149")
         elif t == "artifacts":

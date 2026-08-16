@@ -41,6 +41,11 @@ def _echo(ev: dict) -> None:
         print(f"\n[ERROR] {ev['message']}")
     elif t == "warning":
         print(f"\n[WARN] {ev['message']}")
+    elif t == "retry":
+        print(
+            f"\n[retry] attempt {ev['attempt']} — waiting {int(ev['wait'])}s "
+            f"({ev.get('reason', 'recovering')})"
+        )
 
 
 async def _run(prompt_input: str, session_id: str) -> None:
