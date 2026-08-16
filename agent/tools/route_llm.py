@@ -45,8 +45,28 @@ def build_escalation_tool(cost: CostTracker | None = None):
         resp = await strong_chat.ainvoke(msg)
         text = resp.content if isinstance(resp.content, str) else str(resp.content)
         if cost is not None:
-            cost.add_in(prompt, model=get_model_spec(Tier.COMPLEX).model)
-            cost.add_out(text, model=get_model_spec(Tier.COMPLEX).model)
+            # This call bypasses the graph's usage middleware, so capture the
+            # provider-reported usage here directly (falls back to chars/4).
+            model_name = get_model_spec(Tier.COMPLEX).model
+            usage = getattr(resp, "usage_metadata", None) or {}
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+            if not input_tokens and not output_tokens:
+                meta = getattr(resp, "response_metadata", None) or {}
+                token_usage = meta.get("token_usage") or meta.get("usage") or {}
+                input_tokens = int(
+                    token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0
+                )
+                output_tokens = int(
+                    token_usage.get("completion_tokens")
+                    or token_usage.get("output_tokens")
+                    or 0
+                )
+            if input_tokens or output_tokens:
+                cost.add_usage(model_name, input_tokens, output_tokens)
+            else:
+                cost.add_in(prompt, model=model_name)
+                cost.add_out(text, model=model_name)
         return text
 
     route_to_strong_llm.__name__ = "route_to_strong_llm"

@@ -36,7 +36,7 @@ class MemoryEntry:
 
 
 class LongTermMemory:
-    """File-backed long-term memory with semantic + keyword retrieval."""
+    """File-backed long-term memory with keyword + recency + importance retrieval."""
 
     def __init__(self, session_id: str = "default") -> None:
         self.session_id = re.sub(r"[^\w\-.]", "_", session_id)

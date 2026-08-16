@@ -80,21 +80,23 @@ def build_chat(spec: ModelSpec) -> ChatOpenAI:
 
 
 COMPLEX_HINTS = [
-    # generic intent verbs / deliverables — no topic-specific words, so the
-    # classifier stays honest on unseen domains
-    "research", "crawl", "compare", "analy", "evaluat", "plan", "build", "create a",
-    "write", "report", "summar", "investigat", "solve", "design", "develop", "strategy",
-    "deep dive", "feasib", "impact", "recommend", "architecture", "multi-step", "swot",
+    # strong signals of multi-step work / deliverables only. Generic verbs
+    # like "write", "plan", "build" were removed: they routed nearly every
+    # task to the strongest tier, defeating the cost-optimization point.
+    # Ambiguous tasks land on MEDIUM, where auto mode spends one LLM call.
+    "research", "crawl", "compare", "analy", "evaluat", "investigat",
+    "report", "recommend", "case study", "audit", "roadmap",
+    "deep dive", "feasib", "architecture", "multi-step", "swot",
     # signals that need real web research
-    "news", "latest", "current", "today", "recent", "update",
+    "news", "latest", "current", "today", "recent",
     "article", "find out about", "look up", "who is", "history of",
-    "why are", "why did", "how many", "what happened", "targets",
     # years: any bare year token suggests time-sensitive work
     "2020", "2021", "2022", "2023", "2024", "2025", "2026", "2027", "2028", "2029", "2030",
 ]
 SIMPLE_HINTS = [
     "hello", "hi", "hey", "thanks", "what is 2", "define", "capital of",
     "weather", "time", "date", "spell", "meaning of",
+    "joke", "poem", "haiku", "translate",
 ]
 
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
@@ -129,18 +131,23 @@ class _TierSchema(PydanticBaseModel):
     reason: str = Field(description="One-line reason for the choice.")
 
 
-async def classify_task(text: str) -> tuple[Tier, str]:
+async def classify_task(text: str, force_llm: bool = False) -> tuple[Tier, str]:
     """Cost-aware task classification.
 
     The deterministic heuristic is free, so it always runs first. An LLM call
     is ONLY spent when the heuristic is unsure, i.e. it landed on MEDIUM
     (genuinely ambiguous). Confident SIMPLE/COMPLEX results skip the LLM
     entirely (saves tokens/cost).
+
+    ``force_llm=True`` (Ravenclaw house mode) always asks the classifier LLM
+    so routing decisions are deliberate rather than heuristic guesses.
     """
     tier = heuristic_tier(text)
     reason = f"heuristic => {tier.value}"
 
     mode = settings.MODEL_ROUTING
+    if force_llm:
+        mode = "llm"
     if mode not in ("llm", "auto") or (mode == "auto" and tier is not Tier.MEDIUM):
         return tier, reason
 

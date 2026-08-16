@@ -18,7 +18,12 @@ dist/
 
 # Runtime artifacts
 workspace/
+codex_bridge_debug.log
+*.log
 agent/data/memory/
+# persistent langgraph checkpoints (run state — resumable but not source)
+agent/data/*.sqlite
+agent/data/*.sqlite-*
 
 # IDE / OS
 .vscode/

@@ -26,6 +26,7 @@ from textual.widgets import Input, ListItem, ListView, Static
 
 from agent.config import settings
 from agent.memory.long_term import LongTermMemory
+from agent.modes import CYCLE_ORDER, HOUSES
 
 COMMANDS: dict[str, str] = {
     "/help": "list all commands",
@@ -36,6 +37,8 @@ COMMANDS: dict[str, str] = {
     "/team": "show recent team handoffs",
     "/memory": "open the memory browser",
     "/sessions": "open the session picker (resume a past session)",
+    "/mode": "switch house mode (Tab also cycles)",
+    "/logs": "open the raw execution trace (debug view)",
     "/exit": "quit the app  (aliases: /quit /q)",
 }
 
@@ -49,6 +52,8 @@ SUGGESTIONS: list[tuple[str, str]] = [
     ("/team", "recent handoffs"),
     ("/memory", "open memory browser"),
     ("/sessions", "open session picker"),
+    ("/mode", "switch house mode"),
+    ("/logs", "raw execution trace"),
     ("/exit", "quit the app"),
 ]
 
@@ -407,3 +412,82 @@ class SessionPickerScreen(ModalScreen):
         item = lst.children[lst.index]
         if isinstance(item, SessionRow):
             self.dismiss(item.session["id"])
+
+
+# ---- 4) House mode picker screen -------------------------------------------
+class HouseRow(ListItem):
+    def __init__(self, house) -> None:
+        super().__init__()
+        self.house = house
+
+    def compose(self) -> ComposeResult:
+        h = self.house
+        name = Text()
+        name.append(f"{h.glyph} {h.name:<11s}", style=f"bold {h.color}")
+        name.append(f"  ·  {h.trait:<8s}", style="#8a8a8a")
+        name.append(f"  ·  {h.advantage.upper()}", style="bold #ffffff")
+        yield Static(name, markup=False, classes="house-row")
+        yield Static(Text(f"     {h.description}", style="#8a8a8a"), markup=False, classes="house-desc")
+
+
+class HousePickerScreen(ModalScreen):
+    """Overlay listing the four house modes; Enter/click switches to one."""
+
+    DEFAULT_CSS = """
+    HousePickerScreen { align: center middle; }
+    HousePickerScreen > VerticalScroll {
+        width: 86; height: 70%;
+        background: #0a0a0a;
+        border: double #4a4a4a;
+        padding: 1 2;
+    }
+    HousePickerScreen .house-head { text-style: bold; color: #ffffff; margin-bottom: 1; }
+    HousePickerScreen .house-hint { color: #6e6e6e; margin-bottom: 1; }
+    HousePickerScreen ListView { height: auto; border: solid #2a2a2a; background: #0e0e0e; padding: 0; }
+    HousePickerScreen ListView > ListItem { height: 2; padding: 0; }
+    HousePickerScreen ListView > ListItem.--highlight { background: #232323; }
+    """
+
+    BINDINGS = [
+        ("escape", "dismiss", "Close"),
+        Binding("enter", "select_house", "Switch house", priority=True),
+    ]
+
+    def __init__(self, current_key: str) -> None:
+        super().__init__()
+        self.current_key = current_key
+
+    def compose(self) -> ComposeResult:
+        houses = [HOUSES[k] for k in CYCLE_ORDER if k in HOUSES]
+        self._houses = houses
+        active = HOUSES.get(self.current_key)
+        with VerticalScroll():
+            yield Static("HOUSE MODES — pick your advantage", classes="house-head")
+            hint = "Tab also cycles modes · ↑/↓ or click to choose · Enter to switch · Esc to close"
+            if active:
+                hint += f"\ncurrent: {active.glyph} {active.name} ({active.advantage})"
+            yield Static(hint, classes="house-hint")
+            with ListView(id="house-list"):
+                for h in houses:
+                    yield HouseRow(h)
+
+    def on_mount(self) -> None:
+        lst = self.query_one("#house-list", ListView)
+        idx = next((i for i, h in enumerate(self._houses) if h.key == self.current_key), 0)
+        lst.index = idx
+        lst.focus()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if isinstance(event.item, HouseRow):
+            self.dismiss(event.item.house.key)
+
+    def action_select_house(self) -> None:
+        try:
+            lst = self.query_one("#house-list", ListView)
+        except Exception:  # noqa: BLE001
+            return
+        if lst.index is None or lst.index >= len(lst.children):
+            return
+        item = lst.children[lst.index]
+        if isinstance(item, HouseRow):
+            self.dismiss(item.house.key)

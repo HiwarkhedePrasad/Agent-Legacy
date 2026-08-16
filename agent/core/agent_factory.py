@@ -16,6 +16,8 @@ from deepagents.backends import FilesystemBackend
 from agent.config import settings
 from agent.core.middlewares import build_guardrails, build_usage_middleware
 from agent.cost import CostTracker
+from agent.modes import get_mode
+from agent.prompts.houses import HOUSE_PLANNER_PROMPTS
 from agent.prompts.universal_ops import (
     DECISION_SYSTEM_PROMPT,
     EXECUTOR_SYSTEM_PROMPT,
@@ -39,12 +41,21 @@ def build_agent(
     tier: Tier | str = Tier.SIMPLE,
     cost: CostTracker | None = None,
     domain: str = "universal",
+    checkpointer=None,
 ):
-    """Create the compiled deep agent for the given session and complexity tier."""
+    """Create the compiled deep agent for the given session and complexity tier.
+
+    checkpointer: an optional LangGraph BaseCheckpointSaver (e.g. a persistent
+    SQLite saver). When provided, the graph is resumable — if the step budget
+    is exhausted mid-run, the caller can continue from the saved checkpoint
+    instead of losing the work.
+    """
     all_tools = build_all_tools(session_id, cost=cost)
 
     main_spec = get_model_spec(tier)
     strong_spec = get_model_spec(Tier.COMPLEX)
+
+    house = get_mode()
 
     # Real provider usage tracking (works even with cost=None-ish tiers) —
     # one tracker per agent (main + each sub-agent) so sub-agent calls are
@@ -84,11 +95,16 @@ def build_agent(
         },
     ]
 
+    # Each house mode gets its own planner persona (not the same prompt with a
+    # tacked-on modifier) — see agent/prompts/houses.py.
+    house_planner_prompt = HOUSE_PLANNER_PROMPTS.get(house.key, PLANNER_SYSTEM_PROMPT)
+
     return create_deep_agent(
         model=build_chat(main_spec),
         tools=all_tools,
-        system_prompt=PLANNER_SYSTEM_PROMPT,
+        system_prompt=house_planner_prompt,
         subagents=subagents,
         middleware=[track_usage, *build_guardrails()],
         backend=FilesystemBackend(root_dir=str(settings.WORKSPACE_DIR)),
+        checkpointer=checkpointer,
     )
