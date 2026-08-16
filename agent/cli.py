@@ -30,14 +30,17 @@ def _echo(ev: dict) -> None:
     elif t == "artifacts":
         print(f"\n[files] {ev['files']}")
     elif t == "cost":
+        src = "real" if ev.get("real_usage") else "est"
         print(
-            f"\n\n[cost] in={ev['tokens_in']} out={ev['tokens_out']} "
+            f"\n\n[cost/{src}] in={ev['tokens_in']} out={ev['tokens_out']} "
             f"total={ev['total_tokens']} est=${ev['est_cost_usd']}"
         )
     elif t == "complete":
         print(f"\n\n[done] {ev['final']}\n[artifacts] {ev['artifacts']}")
     elif t == "error":
         print(f"\n[ERROR] {ev['message']}")
+    elif t == "warning":
+        print(f"\n[WARN] {ev['message']}")
 
 
 async def _run(prompt_input: str, session_id: str) -> None:
@@ -49,7 +52,23 @@ async def _run(prompt_input: str, session_id: str) -> None:
 
 def main() -> None:
     args = sys.argv[1:]
-    prompt_input = " ".join(args) if args else input("What should the AI Operations Center do? ")
+    prompt_input = " ".join(args) if args else input("What should Agent-Legacy do? ")
+
+    if prompt_input.startswith("/"):
+        from agent.commands import COMMANDS, help_lines
+
+        cmd = prompt_input.split()[0].lower()
+        if cmd in ("/help", "/?"):
+            for line in help_lines():
+                print(line)
+        elif cmd in ("/exit", "/quit", "/q"):
+            return
+        else:
+            known = [c.split()[0] for c in COMMANDS]
+            hint = "(known: " + ", ".join(known) + ")" if cmd not in known else "(use the dashboard for live commands)"
+            print(f"command {cmd} handled by the dashboard {hint}")
+        return
+
     session_id = "cli"
     asyncio.run(_run(prompt_input, session_id))
 

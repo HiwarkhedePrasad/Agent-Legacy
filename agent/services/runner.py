@@ -18,9 +18,11 @@ The stream is intentionally verbose so the demo SHOWS everything happening:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import AsyncGenerator
 
+from agent.config import settings
 from agent.core.agent_factory import build_agent
 from agent.cost import CostTracker, estimate_tokens
 from agent.memory.long_term import LongTermMemory, summarize_conversation
@@ -29,16 +31,42 @@ from agent.router import classify_task
 _SUBAGENTS = ("research", "executor", "decision", "qa")
 _WEB_TOOLS = ("fetch_url", "crawl_website", "extract_links", "web_search")
 
+# Resilience: how long to wait for the next agent event before treating the run
+# as stuck and recovering (see _timed / _RunTimeout below).
+EVENT_TIMEOUT = 300.0
+
+
+class _RunTimeout(Exception):
+    """Raised when no agent event arrives for EVENT_TIMEOUT seconds (recoverable)."""
+
+
+async def _timed(agen, timeout: float = EVENT_TIMEOUT):
+    """Yield every item from `agen`, but raise _RunTimeout if a single item takes
+    longer than `timeout` to arrive. Prevents a hung model/network call from
+    freezing the whole run forever; the caller turns it into a safe recovery."""
+    it = agen.__aiter__()
+    while True:
+        try:
+            yield await asyncio.wait_for(it.__anext__(), timeout=timeout)
+        except StopAsyncIteration:
+            return
+        except asyncio.TimeoutError:
+            raise _RunTimeout() from None
+
 
 def _token_content(event: dict) -> str | None:
     """Extract text from an on_chat_model_stream chunk.
 
     Some models (e.g. DeepSeek, Qwen) emit their natural-language reasoning in
-    `reasoning_content`/`reasoning` rather than `content`. Surface whichever exists.
+    `reasoning_content`/`reasoning` rather than `content`. Only surface
+    reasoning when SHOW_REASONING is on (off by default) — it's verbose.
     """
     try:
         chunk = event.get("data", {}).get("chunk")
-        for attr in ("reasoning_content", "reasoning", "content"):
+        attrs: tuple[str, ...] = ("content",)
+        if settings.SHOW_REASONING:
+            attrs = ("reasoning_content", "reasoning", "content")
+        for attr in attrs:
             content = getattr(chunk, attr, None)
             if isinstance(content, str) and content.strip():
                 return content
@@ -147,24 +175,24 @@ async def run_agent(
 
     memory_context = ""
     if prev_summary and "No relevant memories" not in prev_summary:
-        memory_context = f"Relevant past memories:\n{prev_summary}\n\n"
-
-    system_text = (
-        memory_context + "Solve the user's request using the whole team."
+        memory_context = f"[Relevant past memories]\n{prev_summary}\n\n"
+    user_text = memory_context + (
+        "[Task] Solve the request below using the whole team.\n\n" + user_input
     )
-    cost.add_in(system_text, model=routed_model)
-    cost.add_in(user_input, model=routed_model)
+    # Fallback estimate only — real provider usage is recorded by the
+    # UsageTracker middleware when available and takes precedence in reports.
+    cost.add_in(user_text, model=routed_model)
 
-    input_payload = {
-        "messages": [
-            {"role": "system", "content": system_text},
-            {"role": "user", "content": user_input},
-        ]
-    }
+    # NOTE: only a user message here — deepagents injects its own system prompt,
+    # and some providers (TokenRouter/Qwen) reject system messages that are not
+    # the very first message in the list.
+    input_payload = {"messages": [{"role": "user", "content": user_text}]}
 
     artifacts: list[str] = []
     final_text = ""
     step = 0
+    failed = False
+    qa_verified = False
 
     def next_step(text: str, agent: str) -> dict:
         nonlocal step
@@ -174,13 +202,12 @@ async def run_agent(
     yield {"type": "agent", "name": "planner", "message": "Planning the approach..."}
 
     try:
-        async for event in agent.astream_events(input_payload, version="v2"):
+        async for event in _timed(agent.astream_events(input_payload, version="v2")):
             event_type = event["event"]
 
             if event_type == "on_chat_model_stream":
                 content = _token_content(event)
                 if content:
-                    cost.add_out(content, model=routed_model)
                     yield {"type": "token", "content": content}
 
             elif event_type == "on_tool_start":
@@ -189,7 +216,6 @@ async def run_agent(
                 if not isinstance(args, dict):
                     args = {}
                 agent = _owner(event)
-                cost.add_in(str(args), model=routed_model)
 
                 label = _tool_label(name, args)
                 if agent == "planner":
@@ -198,7 +224,7 @@ async def run_agent(
                     yield next_step(f"{agent.capitalize()} {label.lower()}", agent)
 
                 if name == "write_file":
-                    path = str(args.get("path", ""))
+                    path = str(args.get("file_path") or args.get("path") or "")
                     if path:
                         artifacts.append(path)
                 yield {"type": "tool_call", "name": name, "args": args, "agent": agent}
@@ -212,7 +238,6 @@ async def run_agent(
                 name = event.get("name", "unknown")
                 output = event.get("data", {}).get("output")
                 agent = _owner(event)
-                cost.add_in(str(output), model=routed_model)
 
                 ok = not (
                     isinstance(output, str)
@@ -253,6 +278,8 @@ async def run_agent(
                 chain_name = event.get("name", "")
                 for sub in _SUBAGENTS:
                     if chain_name == sub or (sub in str(event.get("metadata", {}).get("namespace", ""))):
+                        if sub == "qa":
+                            qa_verified = True
                         yield {
                             "type": "handoff",
                             "to": sub,
@@ -271,18 +298,42 @@ async def run_agent(
                 if text:
                     final_text = text
 
+        if artifacts and not qa_verified:
+            yield {
+                "type": "warning",
+                "message": "Deliverable written without an independent QA review.",
+            }
+
         if artifacts:
             yield {"type": "artifacts", "files": list(dict.fromkeys(artifacts))}
 
+    except _RunTimeout:
+        failed = True
+        yield {
+            "type": "error",
+            "message": "The agent went quiet (no activity for a while) — recovering and stopping safely instead of hanging.",
+        }
+        final_text = "Agent went quiet; the run was stopped safely after a timeout to avoid hanging."
     except Exception as exc:  # noqa: BLE001
+        failed = True
         yield {"type": "error", "message": str(exc)}
         final_text = f"Agent run failed: {exc}"
 
-    summary = summarize_conversation(user_input, final_text or "", artifacts)
-    try:
-        memory.add(summary, memory_type="episodic", importance=3)
-    except Exception:  # noqa: BLE001
-        pass
+    # Failed runs still get a low-importance failure note (so the same question
+    # isn't blindly retried with the same broken context), but the raw exception
+    # is never stored as a successful RESULT.
+    if failed:
+        summary = f"TASK: {user_input[:300]}\nRESULT: FAILED — did not complete successfully."
+        try:
+            memory.add(summary, memory_type="episodic", importance=1)
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        summary = summarize_conversation(user_input, final_text or "", artifacts)
+        try:
+            memory.add(summary, memory_type="episodic", importance=3)
+        except Exception:  # noqa: BLE001
+            pass
 
     yield {
         "type": "cost",
@@ -292,4 +343,5 @@ async def run_agent(
         "type": "complete",
         "final": final_text,
         "artifacts": list(dict.fromkeys(artifacts)),
+        "qa_verified": qa_verified,
     }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 from langchain_core.tools import tool
 
@@ -20,10 +22,18 @@ def _tinyfish_search(query: str, max_results: int = 6) -> list[dict]:
         "language": "en",
     }
     headers = {"X-API-Key": settings.TINYFISH_API_KEY}
-    resp = httpx.get(settings.TINYFISH_ENDPOINT, params=params, headers=headers, timeout=25.0)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("results", data) if isinstance(data, dict) else data
+    for attempt in range(2):
+        try:
+            resp = httpx.get(
+                settings.TINYFISH_ENDPOINT, params=params, headers=headers, timeout=25.0
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("results", data) if isinstance(data, dict) else data
+        except Exception:  # noqa: BLE001
+            if attempt == 0:
+                time.sleep(0.5)
+    return []
 
 
 def _format_results(results: list[dict], max_results: int) -> str:

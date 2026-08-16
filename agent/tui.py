@@ -1,4 +1,4 @@
-"""Rich terminal UI: a live dashboard for the AI Operations Center.
+"""Rich terminal UI: a live dashboard for Agent-Legacy.
 
 Renders the agent's event stream as a scrolling narration log, a browsing
 feed (every website visited), collected-data previews, team activity, and a
@@ -38,15 +38,6 @@ from agent.services.runner import run_agent
 console = Console()
 
 MAX_LOG = 3000
-
-# Enable terminal mouse reporting (press+drag + wheel) and SGR extended coords,
-# so wheel events arrive as `CSI <65;...;M` (up) / `CSI <64;...;M` (down).
-_MOUSE_ON = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h"
-_MOUSE_OFF = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
-
-# Windows: turn on VT input so arrow/PageUp/PageDn/wheel arrive as escape
-# sequences (needed for smooth scrolling in Windows Terminal / conhost).
-_ENABLE_VT_INPUT = 0x0200
 
 
 def _win_enable_vt_input() -> None:
@@ -216,10 +207,14 @@ def _unix_input_thread(tui: "TUI") -> None:
 
 
 def _tier_style(tier: str) -> str:
-    return {"simple": "green", "medium": "yellow", "complex": "magenta"}.get(tier, "white")
+    return {"simple": "green", "medium": "dark_orange", "complex": "bold white"}.get(tier, "white")
 
 
 class TUI:
+    # Liveness heartbeat glyphs — cycles while the agent is running so the
+    # operator can see the system is alive even during a long but healthy run.
+    _HEARTBEAT = "◐◑◒◓"
+
     def __init__(self) -> None:
         self.start = time.time()
         self.routed: dict = {}
@@ -237,6 +232,7 @@ class TUI:
         self.error: str | None = None
         self.scroll = 0           # lines scrolled up from the bottom (0 = follow)
         self.view_height = 28     # rows available in the log panel body
+        self._heartbeat_frame = 0  # cycles through _HEARTBEAT while running
 
         # Persistent REPL input (bottom bar). The input thread writes here as the
         # user types; Enter submits a task into the queue; 'exit' quits.
@@ -267,6 +263,17 @@ class TUI:
         self.final_text = ""
         self.scroll = 0
         self._add_log("bold white", f"========== NEW TASK: {prompt} ==========")
+
+    def _tick_heartbeat(self) -> None:
+        """Advance the liveness heartbeat one frame (called from render)."""
+        if self.status_text not in ("idle", "done", "error"):
+            self._heartbeat_frame = (self._heartbeat_frame + 1) % len(self._HEARTBEAT)
+
+    def _heartbeat_glyph(self) -> str:
+        """Current heartbeat character, or empty string when idle/done/error."""
+        if self.status_text in ("idle", "done", "error"):
+            return ""
+        return self._HEARTBEAT[self._heartbeat_frame]
 
     def _input_bar(self) -> Panel:
         cursor = "█" if (int(time.time() * 2) % 2 == 0) else " "
@@ -308,7 +315,7 @@ class TUI:
             self.routed = ev
             self.status_text = "planning"
             self._add_log(
-                "cyan",
+                "bold white",
                 f"[route] tier={ev['tier']} model={ev['model']} — {ev['reason']}",
             )
         elif t == "token":
@@ -320,16 +327,16 @@ class TUI:
             self._add_log("bold green", f"[{ev['name']}] {ev['message']}")
         elif t == "handoff":
             self.activity.append((ev["to"], time.strftime("%H:%M:%S")))
-            self._add_log("bold blue", f">>> delegating to {ev['to']}")
+            self._add_log("bold white", f">>> delegating to {ev['to']}")
         elif t == "status":
             self.status_text = ev["text"]
-            self._add_log("yellow", f">> #{ev['step']} [{ev['agent']}] {ev['text']}")
+            self._add_log("dark_orange", f">> #{ev['step']} [{ev['agent']}] {ev['text']}")
         elif t == "visit":
             self.browsed.append(ev["url"])
-            self._add_log("blue", f"  -> visited: {ev['url']}")
+            self._add_log("grey74", f"  -> visited: {ev['url']}")
         elif t == "collected":
             self.collected.append((ev["source"], ev["preview"]))
-            self._add_log("magenta", f"  [data] collected {ev['chars']} chars")
+            self._add_log("dark_orange", f"  [data] collected {ev['chars']} chars")
         elif t == "tool_result" and not ev["ok"]:
             self._add_log("bold red", f"  !! tool {ev['name']} FAILED — retrying...")
         elif t == "artifacts":
@@ -385,9 +392,9 @@ class TUI:
         # ▲ = older lines above (can scroll up) ; ▼ = newer lines below (can
         # scroll down toward latest).
         if self.scroll < max_scroll:
-            rows[0] = ("▲", "bold cyan")
+            rows[0] = ("▲", "bold white")
         if self.scroll > 0:
-            rows[-1] = ("▼", "bold cyan")
+            rows[-1] = ("▼", "bold white")
 
         bar = Text()
         for i, (ch, style) in enumerate(rows):
@@ -404,9 +411,9 @@ class TUI:
         if not parts:
             parts.append(Text("  [ waiting for activity... ]", style="dim"))
 
-        title = "[bold]AI Operations Center — live[/]"
+        title = "[bold]Agent-Legacy — live[/]"
         if self.scroll > 0:
-            title = f"[bold]AI Operations Center — scrollback {self.scroll} lines↑[/]"
+            title = f"[bold]Agent-Legacy — scrollback {self.scroll} lines↑[/]"
 
         grid = Table.grid(expand=True)
         grid.add_column(ratio=1, overflow="fold")
@@ -417,19 +424,19 @@ class TUI:
             grid,
             title=title,
             subtitle=f"{len(self.log)} lines",
-            border_style="cyan",
+            border_style="white",
         )
 
     def _side_panel(self) -> Panel:
         rows = []
         if self.browsed:
-            rows.append(Text("BROWSING", style="bold blue"))
+            rows.append(Text("BROWSING", style="bold white"))
             for url in self.browsed[-6:]:
-                rows.append(Text(f"  -> {url}", style="blue", overflow="ellipsis"))
+                rows.append(Text(f"  -> {url}", style="grey74", overflow="ellipsis"))
         if self.collected:
-            rows.append(Text("COLLECTED", style="bold magenta"))
+            rows.append(Text("COLLECTED", style="bold dark_orange"))
             for src, prev in self.collected[-4:]:
-                rows.append(Text(f"  [data] {prev[:60]}", style="magenta", overflow="ellipsis"))
+                rows.append(Text(f"  [data] {prev[:60]}", style="dark_orange", overflow="ellipsis"))
         if self.activity:
             rows.append(Text("TEAM", style="bold green"))
             for name, ts in self.activity[-6:]:
@@ -461,6 +468,7 @@ class TUI:
         return Group(table, hint)
 
     def render(self) -> Layout:
+        self._tick_heartbeat()
         layout = Layout()
         layout.split(
             Layout(name="header", size=3),
@@ -474,9 +482,10 @@ class TUI:
         )
 
         header = Text.assemble(
-            ("AI OPERATIONS CENTER", "bold white on blue"),
+            ("AGENT-LEGACY", "bold white"),
             "   ",
             (self.status_text.upper(), "bold"),
+            (" " + self._heartbeat_glyph(), "bold white"),
             "   ",
             (
                 f"tier: {self.routed.get('tier', '-')}",
@@ -484,7 +493,7 @@ class TUI:
             ),
             f"   elapsed: {int(time.time() - self.start)}s",
         )
-        layout["header"].update(Panel(header, border_style="bright_blue"))
+        layout["header"].update(Panel(header, border_style="white"))
         layout["log"].update(self._log_panel())
         layout["side"].update(self._side_panel())
         layout["footer"].update(Panel(self._footer(), border_style="dim"))

@@ -6,7 +6,10 @@ These give the agent the capability to actually crawl and read websites
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
+import time
 from urllib.parse import urljoin, urlparse
 from dataclasses import dataclass, field
 
@@ -21,18 +24,51 @@ from agent.tools.web_search import USER_AGENT
 MAX_PAGE_CHARS = 8000
 
 
-def _fetch_html(url: str) -> str | None:
+def _is_safe_url(url: str) -> bool:
+    """Block SSRF: reject non-http(s) schemes, localhost and private/reserved
+    IP ranges after DNS resolution."""
     try:
-        resp = httpx.get(
-            url,
-            headers={"User-Agent": USER_AGENT},
-            timeout=25.0,
-            follow_redirects=True,
-        )
-        resp.raise_for_status()
-        return resp.text
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return False
+        host = parsed.hostname or ""
+        if host in ("localhost", "metadata.google.internal"):
+            return False
+        for info in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                return False
+        return True
     except Exception:  # noqa: BLE001
+        return False
+
+
+def _fetch_html(url: str) -> str | None:
+    """Fetch a page, retrying once on transient errors so a bad fetch doesn't
+    just drop content (the caller can then try another source)."""
+    if not _is_safe_url(url):
         return None
+    for attempt in range(2):
+        try:
+            resp = httpx.get(
+                url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=25.0,
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            return resp.text
+        except Exception:  # noqa: BLE001
+            if attempt == 0:
+                time.sleep(0.5)
+    return None
 
 
 def _html_to_markdown(html: str) -> str:
@@ -123,27 +159,35 @@ def _crawl(
     return result
 
 
-@tool
-def crawl_website(start_url: str, max_pages: int = 5, max_depth: int = 2) -> str:
-    """Crawl a website starting from start_url, following same-domain links up to
-    max_depth levels, downloading at most max_pages pages. Returns the combined
-    readable content of every crawled page."""
-    result = _crawl(start_url, max_pages=max_pages, max_depth=max_depth)
-    if not result.pages:
-        return f"Crawl of {start_url} produced no pages."
-    blocks = []
-    for url in result.order:
-        content = result.pages[url]
-        blocks.append(f"=== PAGE: {url} ===\n{content[:MAX_PAGE_CHARS]}")
+def _make_crawl_website_tool(session_id: str):
+    """Build crawl_website bound to a session so crawl indexes don't clobber
+    each other across concurrent sessions."""
+    safe_session = re.sub(r"[^\w\-.]", "_", session_id or "default")
 
-    index_path = settings.WORKSPACE_DIR / "crawled_pages.json"
-    import json
+    @tool
+    def crawl_website(start_url: str, max_pages: int = 5, max_depth: int = 2) -> str:
+        """Crawl a website starting from start_url, following same-domain links up to
+        max_depth levels, downloading at most max_pages pages. Returns the combined
+        readable content of every crawled page."""
+        result = _crawl(start_url, max_pages=max_pages, max_depth=max_depth)
+        if not result.pages:
+            return f"Crawl of {start_url} produced no pages."
+        blocks = []
+        for url in result.order:
+            content = result.pages[url]
+            blocks.append(f"=== PAGE: {url} ===\n{content[:MAX_PAGE_CHARS]}")
 
-    index_path.write_text(
-        json.dumps({"session_urls": result.order}, indent=2), encoding="utf-8"
-    )
-    return "\n\n".join(blocks)
+        index_path = settings.WORKSPACE_DIR / f"crawled_pages_{safe_session}.json"
+        import json
+
+        index_path.write_text(
+            json.dumps({"session_urls": result.order}, indent=2), encoding="utf-8"
+        )
+        return "\n\n".join(blocks)
+
+    crawl_website.__name__ = "crawl_website"
+    return crawl_website
 
 
-def build_crawl_tools() -> list:
-    return [fetch_url, extract_links, crawl_website]
+def build_crawl_tools(session_id: str = "default") -> list:
+    return [fetch_url, extract_links, _make_crawl_website_tool(session_id)]

@@ -36,6 +36,8 @@ class ModelSpec:
     base_url: str
     api_key: str
     temperature: float = 0.3
+    timeout: float = 300.0   # per-request cap so a hung model can't freeze a run
+    max_retries: int = 2
 
 
 def _resolve(tier: Tier) -> ModelSpec:
@@ -72,27 +74,52 @@ def build_chat(spec: ModelSpec) -> ChatOpenAI:
         api_key=spec.api_key or "none",
         base_url=spec.base_url,
         temperature=spec.temperature,
+        timeout=spec.timeout,
+        max_retries=spec.max_retries,
     )
 
 
 COMPLEX_HINTS = [
+    # generic intent verbs / deliverables — no topic-specific words, so the
+    # classifier stays honest on unseen domains
     "research", "crawl", "compare", "analy", "evaluat", "plan", "build", "create a",
     "write", "report", "summar", "investigat", "solve", "design", "develop", "strategy",
     "deep dive", "feasib", "impact", "recommend", "architecture", "multi-step", "swot",
+    # signals that need real web research
+    "news", "latest", "current", "today", "recent", "update",
+    "article", "find out about", "look up", "who is", "history of",
+    "why are", "why did", "how many", "what happened", "targets",
+    # years: any bare year token suggests time-sensitive work
+    "2020", "2021", "2022", "2023", "2024", "2025", "2026", "2027", "2028", "2029", "2030",
 ]
 SIMPLE_HINTS = [
-    "hello", "hi", "hey", "thanks", "what is 2", "define", "who is", "capital of",
+    "hello", "hi", "hey", "thanks", "what is 2", "define", "capital of",
     "weather", "time", "date", "spell", "meaning of",
 ]
+
+_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+
+
+def _has_hint(low: str, hints: list[str]) -> bool:
+    """Hint match. Greetings are matched on word boundaries (so 'hi' doesn't
+    fire inside 'machine'); everything else is substring (stem-ish) matching."""
+    for hint in hints:
+        if hint in ("hi", "hey", "hello"):
+            if re.search(rf"\b{hint}\b", low):
+                return True
+        elif hint in low:
+            return True
+    return False
 
 
 def heuristic_tier(text: str) -> Tier:
     low = text.lower()
-    if len(text) < 140 and not any(k in low for k in COMPLEX_HINTS):
-        if any(k in low for k in SIMPLE_HINTS) or len(text) < 60:
+    has_complex = _has_hint(low, COMPLEX_HINTS) or bool(_YEAR_RE.search(low))
+    if len(text) < 140 and not has_complex:
+        if _has_hint(low, SIMPLE_HINTS) or len(text) < 60:
             return Tier.SIMPLE
         return Tier.MEDIUM
-    if any(k in low for k in COMPLEX_HINTS) or len(text) > 400:
+    if has_complex or len(text) > 400:
         return Tier.COMPLEX
     return Tier.MEDIUM
 
@@ -118,7 +145,9 @@ async def classify_task(text: str) -> tuple[Tier, str]:
         return tier, reason
 
     try:
-        classifier = build_chat(get_model_spec(Tier.SIMPLE))
+        # Use at least a medium-quality model for the routing decision itself —
+        # a cheap model consistently under-classifies research-heavy tasks.
+        classifier = build_chat(get_model_spec(Tier.MEDIUM))
         clean_model: ChatOpenAI = classifier.with_structured_output(_TierSchema)
         result = await clean_model.ainvoke(
             [

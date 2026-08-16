@@ -1,10 +1,10 @@
-# Components — Cost-Aware Multi-Agent Deep Research Framework
+# Agent-Legacy — Cost-Aware Multi-Agent Deep Research Framework
 
 An autonomous AI agent **team** that plans, researches the web, reasons, builds
-deliverable files on disk, and self-reviews — while picking the cheapest model
-that can do each job. Built on [`deepagents`](https://pypi.org/project/deepagents/)
+deliverable files on disk, and self-reviews — routing each job to the cheapest
+capable model. Built on [`deepagents`](https://pypi.org/project/deepagents/)
 (compiles to a [LangGraph](https://github.com/langchain-ai/langgraph) graph),
-OpenAI-compatible routing via [OpenRouter](https://openrouter.ai), and a verbose
+OpenAI-compatible routing via **TokenRouter** (`qwen/qwen3.8-max-free`), and a verbose
 streaming event protocol designed to make every step of the agent's work
 observable.
 
@@ -54,7 +54,7 @@ services/runner.run_agent()     async generator yielding structured events
 agent/tui.py                    Rich live dashboard (run.bat)
 ```
 
-### The team (PROMPT-A-THON #10 — Universal AI Operations Center)
+### The team
 - **Planner (CEO)** — breaks goals down with `write_todos`, coordinates the
   team, uses memory, recovers from failures, writes deliverables, and narrates
   each step in plain, natural language.
@@ -73,7 +73,7 @@ components/
 |  |- router.py            # multi-LLM tier router + classifier
 |  |- cost.py              # token + USD cost estimation
 |  |- core/agent_factory.py# builds the deepagents graph
-|  |- prompts/universal_ops.py  # Universal Ops Center system prompts
+|  |- prompts/universal_ops.py  # Agent-Legacy system prompts
 |  |- services/runner.py   # async streaming event runner
 |  |- memory/              # long-term memory + memory tools
 |  |- tools/               # crawl, web_search, registry, route_llm
@@ -103,20 +103,22 @@ pip install -e ".[dev]"
 
 # 3. Configure secrets
 cp .env.example .env
-#   then edit .env and set API_KEY (OpenRouter) + TINYFISH_API_KEY
+#   then edit .env and set API_KEY (TokenRouter — same base URL + key found in
+#   your opencode.json tokenrouter provider block) + TINYFISH_API_KEY
 ```
 
 ### Configuration (`.env`)
 
 | Variable | Purpose |
 |---|---|
-| `BASE_URL` / `API_KEY` / `MODEL` / `TEMPERATURE` | Global default LLM (OpenRouter) |
+| `BASE_URL` / `API_KEY` / `MODEL` / `TEMPERATURE` | Global default LLM (TokenRouter) |
 | `SIMPLE_*` / `MEDIUM_*` / `COMPLEX_*` | Per-tier model/base_url/key; blank -> falls back to global default |
 | `MODEL_ROUTING` | `auto` (heuristic first, LLM only if ambiguous) / `llm` / `heuristic` |
 | `TINYFISH_API_KEY` / `TINYFISH_ENDPOINT` | Web search provider |
 
-A single OpenRouter key is enough — leave the per-tier keys blank and they fall
-back to the global default.
+A single TokenRouter key is enough — leave the per-tier keys blank and they fall
+back to the global default. The default setup runs every tier on
+`qwen/qwen3.8-max-free` (free tier, so the cost tracker reports $0.00).
 
 ## How routing works (the clever part)
 
@@ -143,9 +145,15 @@ Plus filesystem tools (`write_file`, `list_files`, ...) from the `deepagents`
 
 ## Cost tracking
 
-Tokens are estimated as `chars // 4` and matched against per-model USD rates per
-1M tokens (prefix-matched: gpt-4o-mini, deepseek, qwen, gemini, claude...). The
-report is clearly labelled as an **estimate**, not exact provider billing.
+Token usage comes from the provider's **real `usage_metadata`** (streamed back
+by the model) whenever available, attributed per actual model — so sub-agent
+calls on the strong model are no longer billed to the routed model. This is
+done by a `UsageTracker` middleware wrapped around every model call. When the
+provider reports nothing, it falls back to the `chars // 4` estimate. USD cost
+is matched against per-model rates per 1M tokens (prefix-matched:
+gpt-4o-mini, deepseek, qwen, gemini, claude...). The report is clearly labelled
+as real provider usage or an estimate. Run-level guardrails
+(`ModelCallLimitMiddleware` / `ToolCallLimitMiddleware`) cap runaway loops.
 
 ## Memory
 
@@ -166,9 +174,10 @@ run.bat research AI agents and write a report   # or with a prompt
 run.bat --plain "..."         # simple log view instead of the TUI
 ```
 
-The Rich TUI shows the header (status, routed model, elapsed time), a streaming
-narration log with numbered steps, a "Team & Data" panel (every website
-visited, collected snippets, delegations), and a live token/cost footer.
+The Agent-Legacy TUI is a mission-control dashboard (Textual): a branded top
+strip, a status-pill bar (state, routed tier/model, step, elapsed clock), a
+live livestream log with per-agent glyphs, a Team/Browsing/Collected side panel,
+and a token/cost footer. `--rich` runs the original hand-rolled Rich dashboard.
 
 ## Running the smoke test
 

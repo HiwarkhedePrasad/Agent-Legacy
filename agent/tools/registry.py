@@ -12,7 +12,7 @@ def build_all_tools(session_id: str, cost: CostTracker | None = None) -> list:
     from agent.tools.web_search import web_search
 
     return [
-        *build_crawl_tools(),
+        *build_crawl_tools(session_id),
         web_search,
         *build_memory_tools(session_id),
         build_escalation_tool(cost),
