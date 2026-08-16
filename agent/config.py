@@ -25,6 +25,20 @@ PROJECT_ROOT = _project_root()
 load_dotenv(PROJECT_ROOT / ".env")
 
 
+def _edit_root() -> Path:
+    """Directory the agent is allowed to read/edit code in.
+
+    Defaults to the sandboxed workspace/ folder. Set AGENT_LEGACY_EDIT_ROOT
+    to point the filesystem tools (read_file / edit_file / write_file / grep /
+    glob) at a real repository, so the agent can modify or add features in
+    actual source files instead of only writing deliverables to workspace/.
+    """
+    override = os.getenv("AGENT_LEGACY_EDIT_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return PROJECT_ROOT / "workspace"
+
+
 class Settings:
     BASE_URL: str = os.getenv("BASE_URL", "https://api.openai.com/v1")
     API_KEY: str = os.getenv("API_KEY", "none")
@@ -59,12 +73,24 @@ class Settings:
     MEMORY_DIR: Path = PROJECT_ROOT / "agent" / "data" / "memory"
     WORKSPACE_DIR: Path = PROJECT_ROOT / "workspace"
 
+    # Root for filesystem tools (read_file/edit_file/write_file/...). See _edit_root.
+    EDIT_ROOT: Path = _edit_root()
+
     # LangGraph checkpoint DB: persists run state (and therefore the ability to
     # RESUME after the step budget runs out) across restarts, on disk.
     CHECKPOINT_DB: Path = PROJECT_ROOT / "agent" / "data" / "checkpoints.sqlite"
 
 
 settings = Settings()
+
+_edit_root_env = os.getenv("AGENT_LEGACY_EDIT_ROOT")
+if _edit_root_env and not settings.EDIT_ROOT.is_dir():
+    print(
+        f"[config] AGENT_LEGACY_EDIT_ROOT '{settings.EDIT_ROOT}' is not a "
+        f"directory - falling back to {settings.WORKSPACE_DIR}",
+        file=sys.stderr,
+    )
+    settings.EDIT_ROOT = settings.WORKSPACE_DIR
 settings.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 settings.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 settings.CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)

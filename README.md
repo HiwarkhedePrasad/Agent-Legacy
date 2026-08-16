@@ -138,12 +138,21 @@ or `MODEL_ROUTING=llm` to always ask it.
 | `fetch_url` | fetch one page -> readable markdown |
 | `extract_links` | links on a page (optionally same-domain) |
 | `crawl_website` | recursive same-domain BFS crawl |
+| `fetch_pdf` | fetch a PDF (report/whitepaper) -> extracted text |
+| `call_api` | GET a public REST/JSON endpoint -> decoded data |
+| `calculate` | safe AST-evaluated math (no head arithmetic) |
+| `get_datetime` | current date/time — anchors 'latest'/'today' tasks |
 | `recall_memory` | search long-term memory |
 | `remember` | persist a learning/fact |
 | `route_to_strong_llm` | hand ONE hard reasoning subtask to the strongest model |
 
-Plus filesystem tools (`write_file`, `list_files`, ...) from the `deepagents`
-`FilesystemBackend`.
+Plus filesystem tools (`read_file`, `edit_file`, `write_file`, `ls`, `glob`,
+`grep`) from the `deepagents` `FilesystemBackend`. `read_file` shows content
+with line numbers and `edit_file` does a targeted old-text -> new-text
+replacement, so the agent can patch specific lines without rewriting whole
+files. These operate on the sandboxed `workspace/` by default; set
+`AGENT_LEGACY_EDIT_ROOT` (see `.env.example`) to point them at a real
+repository so the agent can modify or add features in actual source code.
 
 ## Cost tracking
 
@@ -209,8 +218,7 @@ pytest
 Expected output (no API call is made — it only verifies the graph compiles):
 
 ```
-[OK] 7 tools registered: fetch_url, extract_links, crawl_website,
-     web_search, recall_memory, remember, route_to_strong_llm
+[OK] 11 tools registered (crawl, web, extras, memory, escalation)
 [OK] memory store has 1 entries
 [OK] memory retrieval returned 1 result(s)
 [OK] deep agent graph compiled (no API call made)
@@ -232,6 +240,27 @@ for playback.
 Configure via `TTS_MODEL` / `STT_MODEL` (defaults: `fish-audio/s2.1-pro-free:free`
 TTS, `fish-audio/transcribe-1` STT). Use `response_format="wav"` for live
 playback, `"mp3"` for saved clips.
+
+## Distributing as a single binary
+
+One executable + a `.env` sidecar, no Python needed on the target machine
+(the opencode/codex-style distribution model).
+
+```bash
+build.bat                      # builds dist\agent-legacy.exe via PyInstaller
+dist\agent-legacy.exe --smoke  # binary self-test (imports + graph, no API calls)
+dist\agent-legacy.exe          # full TUI (same as run.bat)
+dist\agent-legacy.exe --plain "research X"   # plain log view
+```
+
+- Built with PyInstaller from `agent-legacy.spec`; it's a console exe because
+  the app is a terminal UI. Result is ~29 MB (unused provider SDKs,
+  cryptography and the FastAPI relay are excluded; UPX-compressed).
+- User data is anchored NEXT TO the exe (override with `AGENT_LEGACY_HOME`):
+  `.env`, `agent/data/` (memory + checkpoints), `workspace/`. Secrets are
+  never baked into the binary — ship your `.env` alongside it.
+- Binaries are OS-specific: build the Windows exe on Windows, the Linux
+  binary on Linux, the macOS app on macOS (a CI matrix covers all three).
 
 ## Roadmap / notes
 
